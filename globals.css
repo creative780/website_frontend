@@ -1,0 +1,204 @@
+@import "tailwindcss";
+
+/* =========================================
+   Theme Vars & Tailwind @theme bridge
+   ========================================= */
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+  /* Font vars are expected to be injected by next/font if used */
+  /* Optional: --font-poppins, --font-geist-sans, --font-geist-mono */
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  /* Prefer Poppins, then Geist Sans, then system */
+  --font-sans: var(--font-poppins, var(--font-geist-sans, ui-sans-serif));
+  --font-mono: var(--font-geist-mono, ui-monospace);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+/* =========================================
+   Base: Typography & Body
+   ========================================= */
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans), Arial, Helvetica, sans-serif;
+  font-weight: 400;
+  font-style: normal;
+}
+
+/* Semantic weights */
+h1 { font-weight: 700; font-style: normal; }
+h2 { font-weight: 600; font-style: normal; }
+h3, h4 { font-weight: 500; font-style: normal; }
+h5 { font-weight: 400; font-style: normal; }
+h6 { font-weight: 300; font-style: normal; }
+
+p, span, div, main, section, article, header, label, input, textarea, a {
+  font-weight: 400; font-style: normal;
+}
+
+aside, footer, small { font-weight: 300; font-style: normal; }
+strong, b { font-weight: 700; font-style: normal; }
+em, i { font-weight: 400; font-style: italic; }
+cite { font-weight: 300; font-style: italic; }
+nav, button { font-weight: 500; font-style: normal; }
+blockquote { font-weight: 400; font-style: normal; }
+
+/* Placeholders inherit the typeface/weight */
+input::placeholder,
+textarea::placeholder { font-family: inherit; font-weight: inherit; }
+
+/* =========================================
+   Resets for form controls
+   ========================================= */
+@layer base {
+  button,
+  input,
+  select,
+  textarea {
+    @apply appearance-none bg-transparent border-0 outline-none;
+  }
+}
+
+/* =========================================
+   Components
+   ========================================= */
+@layer components {
+  /* Unified .input (kept the richer, white/blue focus version) */
+  .input {
+    @apply w-full px-3 py-2 border border-gray-300 rounded bg-white text-black placeholder-gray-500
+           focus:outline-none focus:ring-2 focus:ring-blue-500;
+  }
+
+  /* Simple red button utility (from both, deduped) */
+  .btn {
+    @apply bg-red-700 text-white px-6 py-2 rounded hover:bg-red-800 transition;
+  }
+
+  /* Primary input/select/button variants */
+  .input-primary {
+    @apply border-2 border-gray-400 rounded-md px-4 py-2 text-gray-900 placeholder-gray-400
+           focus:outline-none focus:ring-2 focus:ring-[#8B1C1C] focus:border-[#8B1C1C]
+           transition-shadow shadow-sm hover:shadow-md bg-white;
+  }
+
+  .select-primary {
+    @apply border-2 border-gray-400 rounded-md px-4 py-2 text-gray-900 bg-white
+           focus:outline-none focus:ring-2 focus:ring-[#8B1C1C] focus:border-[#8B1C1C]
+           transition-shadow shadow-sm hover:shadow-md;
+  }
+
+  .btn-primary {
+    @apply bg-gradient-to-r from-[#8B1C1C] to-[#A42525] text-white px-8 py-3 rounded-full
+           font-bold tracking-wide shadow-lg transition transform hover:scale-105 hover:shadow-2xl
+           focus:outline-none focus:ring-4 cursor-pointer focus:ring-[#8B1C1C]/60;
+  }
+
+  .all-\[unset\] { all: unset; }
+}
+
+/* =========================================
+   Tailwind Utilities
+   ========================================= */
+@tailwind utilities;
+
+/* =========================================
+   Scrollbar utilities (hide + custom)
+   ========================================= */
+/* Class-based hide (scoped) */
+.scrollbar-hide::-webkit-scrollbar { display: none; }
+.scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Responsive alias used in both files */
+@media (max-width: 768px) {
+  .hide-scrollbar::-webkit-scrollbar { display: none; }
+  .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+}
+
+/* Global hide while keeping scroll behavior */
+::-webkit-scrollbar { display: none; }       /* WebKit */
+* { scrollbar-width: none; }                 /* Firefox */
+* { -ms-overflow-style: none; }              /* IE/Edge */
+
+/* Custom scrollbar for opted-in elements */
+.custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; border-radius: 8px; }
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(137,31,26,0.8) 0%, rgba(109,25,21,0.8) 100%);
+  border-radius: 8px; border: 1px solid transparent; transition: all 0.2s ease;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(137,31,26,1) 0%, rgba(109,25,21,1) 100%);
+  transform: scale(1.05);
+}
+
+/* Thin scrollbar variant (opt-in) */
+.thin-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
+.thin-scrollbar::-webkit-scrollbar-track { background: transparent; border-radius: 6px; }
+.thin-scrollbar::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #891F1A 0%, #6d1915 100%);
+  border-radius: 6px; transition: all 0.2s ease;
+}
+.thin-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #6d1915 0%, #4d1310 100%);
+}
+
+/* Smooth scrolling */
+html { scroll-behavior: smooth; }
+
+/* Dedicated hide helper (class) */
+.hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+.hide-scrollbar::-webkit-scrollbar { display: none; }
+
+/* =========================================
+   Cursor kit (opt-in utilities)
+   ========================================= */
+.product-card { cursor: pointer !important; }
+.admin-button, button { cursor: pointer !important; }
+input, textarea { cursor: text !important; }
+a { cursor: pointer !important; }
+.drag-handle { cursor: grab !important; }
+.dragging { cursor: grabbing !important; }
+.resize-handle { cursor: nw-resize !important; }
+.loading { cursor: wait !important; }
+.help-cursor { cursor: help !important; }
+.disabled-cursor { cursor: not-allowed !important; }
+.hover-cursor:hover { cursor: pointer !important; }
+.draggable { cursor: grab !important; }
+.draggable:active { cursor: grabbing !important; }
+
+.grab-cursor { cursor: grab !important; }
+.grabbing-cursor { cursor: grabbing !important; }
+.move-cursor { cursor: move !important; }
+.resize-cursor { cursor: nw-resize !important; }
+.copy-cursor { cursor: copy !important; }
+.crosshair-cursor { cursor: crosshair !important; }
+.zoom-in-cursor { cursor: zoom-in !important; }
+.zoom-out-cursor { cursor: zoom-out !important; }
+.not-allowed-cursor { cursor: not-allowed !important; }
+.progress-cursor { cursor: progress !important; }
+.context-menu-cursor { cursor: context-menu !important; }
+.alias-cursor { cursor: alias !important; }
+.cell-cursor { cursor: cell !important; }
+.col-resize-cursor { cursor: col-resize !important; }
+.row-resize-cursor { cursor: row-resize !important; }
+.ew-resize-cursor { cursor: ew-resize !important; }
+.ns-resize-cursor { cursor: ns-resize !important; }
+.nesw-resize-cursor { cursor: nesw-resize !important; }
+.nwse-resize-cursor { cursor: nwse-resize !important; }
+.grab-cursor:hover,
+.move-cursor:hover,
+.resize-cursor:hover { cursor: grab !important; }
+.grab-cursor:active,
+.move-cursor:active,
+.resize-cursor:active { cursor: grabbing !important; }

@@ -1,0 +1,108 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+  overflow: auto; /* allow scroll */
+}
+
+/* === Hide scrollbars globally but keep scrolling === */
+::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Edge */
+}
+body {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;     /* Firefox */
+}
+
+/* Inputs and buttons */
+.input {
+  @apply w-full border border-gray-300 px-4 py-2 rounded-md focus:outline-none focus:ring-2 focus:ring-red-500;
+}
+.btn {
+  @apply bg-red-700 text-white px-6 py-2 rounded hover:bg-red-800 transition;
+}
+
+@layer base {
+  button,
+  input,
+  select,
+  textarea {
+    @apply appearance-none bg-transparent border-0 outline-none;
+  }
+}
+
+@tailwind utilities;
+
+@layer components {
+  .all-\[unset\] {
+    all: unset;
+  }
+}
+
+/* Mobile-specific (redundant now, but kept for clarity) */
+@media (max-width: 768px) {
+  ::-webkit-scrollbar {
+    display: none;
+  }
+  body {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+@layer components {
+  .input {
+    @apply w-full px-3 py-2 border border-gray-300 rounded bg-white text-black placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500;
+  }
+}
+.input-primary {
+  @apply border-2 border-gray-400 rounded-md px-4 py-2 text-gray-900 placeholder-gray-400
+    focus:outline-none focus:ring-2 focus:ring-[#8B1C1C] focus:border-[#8B1C1C]
+    transition-shadow shadow-sm hover:shadow-md bg-white;
+}
+
+.select-primary {
+  @apply border-2 border-gray-400 rounded-md px-4 py-2 text-gray-900 bg-white
+    focus:outline-none focus:ring-2 focus:ring-[#8B1C1C] focus:border-[#8B1C1C]
+    transition-shadow shadow-sm hover:shadow-md;
+}
+
+.btn-primary {
+  @apply 
+    bg-gradient-to-r from-[#8B1C1C] to-[#A42525] 
+    text-white 
+    px-8 py-3 
+    rounded-full 
+    font-bold 
+    tracking-wide 
+    shadow-lg 
+    transition 
+    transform 
+    hover:scale-105 
+    hover:shadow-2xl 
+    focus:outline-none 
+    focus:ring-4 
+    cursor-pointer
+    focus:ring-[#8B1C1C]/60;
+}
