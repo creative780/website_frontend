@@ -1,10 +1,10 @@
+// Front_End/app/admin/components/OrderModal.tsx
 'use client';
 
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { toast } from 'react-toastify';
 import { API_BASE_URL } from '../../utils/api';
 
-//
 // ---- Frontend key helper (required for FrontendOnlyPermission) ----
 const FRONTEND_KEY = (process.env.NEXT_PUBLIC_FRONTEND_KEY || '').trim();
 const withFrontendKey = (init: RequestInit = {}): RequestInit => {
@@ -12,8 +12,15 @@ const withFrontendKey = (init: RequestInit = {}): RequestInit => {
   headers.set('X-Frontend-Key', FRONTEND_KEY);
   return { ...init, headers };
 };
-//
 // -------------------------------------------------------------------
+
+const CURRENCY = 'AED';
+const fmtMoney = (n: number) =>
+  `${CURRENCY} ${(Number.isFinite(n) ? n : 0).toFixed(2)}`;
+const toNum = (v: unknown, def = 0) => {
+  const n = typeof v === 'string' ? parseFloat(v) : Number(v);
+  return Number.isFinite(n) ? n : def;
+};
 
 type OrderStatus = 'Pending' | 'Processing' | 'Shipped' | 'Completed';
 
@@ -51,6 +58,8 @@ type OrderPayload = {
     unit_price: number;
     total_price: number;
   }[];
+  // Optional — include only if your backend supports it:
+  order_placed_on?: string;
 };
 
 type Product = {
@@ -74,6 +83,7 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
 
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [saving, setSaving] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string>('');
 
   // Selected product state now also tracks editable unitPrice
@@ -92,15 +102,19 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
   }, []);
 
   useEffect(() => {
+    const controller = new AbortController();
+
     const fetchProducts = async () => {
       setLoading(true);
       setErrorMsg('');
       try {
         const res = await fetch(
-          `${API_BASE_URL}/api/show-product/`,
+          `${API_BASE_URL}/api/show-product/?_=${Date.now()}`,
           withFrontendKey({
             headers: { 'Content-Type': 'application/json' },
             method: 'GET',
+            cache: 'no-store',
+            signal: controller.signal,
           }),
         );
 
@@ -109,11 +123,11 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
           setProducts([]);
           setErrorMsg(`Fetch failed (${res.status}).`);
           console.error('show-product non-OK:', res.status, txt);
-          const msg =
+          toast.error(
             res.status === 401
               ? 'Products fetch failed (401). Check X-Frontend-Key.'
-              : `Products fetch failed (${res.status}).`;
-          toast.error(msg);
+              : `Products fetch failed (${res.status}).`
+          );
           return;
         }
 
@@ -139,6 +153,7 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
           toast.error('Unexpected products response. Check API payload.');
         }
       } catch (err: any) {
+        if (err?.name === 'AbortError') return;
         console.error('Failed to fetch products', err);
         setProducts([]);
         setErrorMsg('Network or parsing error while fetching products.');
@@ -149,6 +164,7 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
     };
 
     fetchProducts();
+    return () => controller.abort();
   }, []);
 
   const [formData, setFormData] = useState<OrderFormData>({
@@ -168,20 +184,22 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
   // Build selected items from state (uses editable unitPrice)
   const selectedItems = useMemo(() => {
     return Object.entries(selectedProducts).map(([product_id, { quantity, unitPrice }]) => {
-      const safeUnit = Number.isFinite(unitPrice) ? unitPrice : 0;
+      const q = Math.max(1, toNum(quantity, 1));
+      const u = Math.max(0, toNum(unitPrice, 0));
       return {
         product_id,
-        quantity,
-        unit_price: safeUnit,
-        total_price: safeUnit * quantity,
+        quantity: q,
+        unit_price: u,
+        total_price: u * q,
       };
     });
   }, [selectedProducts]);
 
   // Compute total from selected items
-  const computedTotal = useMemo(() => {
-    return selectedItems.reduce((acc, item) => acc + (item.total_price || 0), 0);
-  }, [selectedItems]);
+  const computedTotal = useMemo(
+    () => selectedItems.reduce((acc, item) => acc + (item.total_price || 0), 0),
+    [selectedItems]
+  );
 
   // Keep the visible total in sync (read-only display)
   useEffect(() => {
@@ -192,7 +210,7 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
     if (!productId) return;
     if (selectedProducts[productId]) return; // already added
     const prod = products.find((p) => String(p.id) === String(productId));
-    const defaultPrice = parseFloat(String(prod?.price ?? '0')) || 0;
+    const defaultPrice = toNum(prod?.price, 0);
     setSelectedProducts((prev) => ({
       ...prev,
       [productId]: { quantity: 1, unitPrice: defaultPrice },
@@ -200,26 +218,13 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
   };
 
   const handleSubmit = async () => {
-    if (!formData.customer.trim()) {
-      toast.error('Please enter the customer name.');
-      return;
-    }
-    if (!formData.address?.trim()) {
-      toast.error('Please enter the address.');
-      return;
-    }
-    if (!formData.city?.trim()) {
-      toast.error('Please enter the city.');
-      return;
-    }
-    if (!formData.zip_code?.trim()) {
-      toast.error('Please enter the zip code.');
-      return;
-    }
-    if (selectedItems.length === 0) {
-      toast.error('Please select at least one product.');
-      return;
-    }
+    if (saving) return;
+
+    if (!formData.customer.trim()) return toast.error('Please enter the customer name.');
+    if (!formData.address?.trim()) return toast.error('Please enter the address.');
+    if (!formData.city?.trim()) return toast.error('Please enter the city.');
+    if (!formData.zip_code?.trim()) return toast.error('Please enter the zip code.');
+    if (selectedItems.length === 0) return toast.error('Please select at least one product.');
 
     const payload: OrderPayload = {
       user_name: formData.customer,
@@ -236,9 +241,11 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
       total_price: computedTotal.toFixed(2),
       notes: formData.notes || '',
       items: selectedItems,
+      ...(formData.date ? { order_placed_on: formData.date } : {}), // optional
     };
 
     try {
+      setSaving(true);
       const res = await fetch(
         `${API_BASE_URL}/api/save-order/`,
         withFrontendKey({
@@ -264,6 +271,8 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
     } catch (error) {
       console.error('Failed to save order:', error);
       toast.error('Failed to save the order. Please try again.');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -372,7 +381,7 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
                 {Array.isArray(products) &&
                   products.map((product) => (
                     <option key={String(product.id)} value={String(product.id)}>
-                      {product.name} - ${String(product.price)}
+                      {product.name} - {fmtMoney(toNum(product.price, 0))}
                     </option>
                   ))}
               </select>
@@ -390,7 +399,9 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
           {Object.entries(selectedProducts).map(([productId, { quantity, unitPrice }]) => {
             const product = products.find((p) => String(p.id) === String(productId));
             if (!product) return null;
-            const lineTotal = (unitPrice || 0) * (quantity || 0);
+            const u = Math.max(0, toNum(unitPrice, 0));
+            const q = Math.max(1, toNum(quantity, 1));
+            const lineTotal = u * q;
 
             return (
               <div
@@ -401,7 +412,7 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
                   <div className="flex-1">
                     <p className="font-medium">{product.name}</p>
                     <p className="text-xs text-gray-500">
-                      Default: ${String(product.price)} • ID: {String(product.id)}
+                      Default: {fmtMoney(toNum(product.price, 0))} • ID: {String(product.id)}
                     </p>
                   </div>
                   <button
@@ -412,6 +423,7 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
                     }}
                     className="ml-3 text-red-600 font-bold text-lg"
                     title="Remove"
+                    aria-label={`Remove ${product.name}`}
                   >
                     &times;
                   </button>
@@ -423,7 +435,7 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
                     <input
                       type="number"
                       min={1}
-                      value={quantity}
+                      value={q}
                       onChange={(e) => {
                         const qty = Math.max(1, parseInt(e.target.value || '1', 10));
                         setSelectedProducts((prev) => ({
@@ -436,15 +448,14 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
                   </label>
 
                   <label className="flex flex-col text-sm">
-                    <span className="mb-1 text-gray-600">Unit Price ($)</span>
+                    <span className="mb-1 text-gray-600">Unit Price ({CURRENCY})</span>
                     <input
                       type="number"
                       step="0.01"
                       min={0}
-                      value={Number.isFinite(unitPrice) ? unitPrice : 0}
+                      value={u}
                       onChange={(e) => {
-                        const v = e.target.value;
-                        const priceNum = Math.max(0, parseFloat(v || '0'));
+                        const priceNum = Math.max(0, toNum(e.target.value, 0));
                         setSelectedProducts((prev) => ({
                           ...prev,
                           [productId]: { ...prev[productId], unitPrice: priceNum },
@@ -455,11 +466,11 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
                   </label>
 
                   <label className="flex flex-col text-sm">
-                    <span className="mb-1 text-gray-600">Line Total ($)</span>
+                    <span className="mb-1 text-gray-600">Line Total</span>
                     <input
                       type="text"
                       readOnly
-                      value={lineTotal.toFixed(2)}
+                      value={fmtMoney(lineTotal)}
                       className="border rounded px-2 py-2 bg-gray-50"
                     />
                   </label>
@@ -471,8 +482,8 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
           {/* Total (computed) */}
           <input
             type="text"
-            placeholder="Total ($) *"
-            value={formData.total}
+            placeholder={`Total (${CURRENCY}) *`}
+            value={`${fmtMoney(toNum(formData.total, 0))}`}
             readOnly
             className="w-full px-4 py-3 border rounded-md bg-gray-50 focus:ring-2 focus:ring-[#891F1A]"
           />
@@ -512,8 +523,13 @@ export default function OrderForm({ onClose, onSave }: OrderFormProps) {
           >
             Cancel
           </button>
-          <button onClick={handleSubmit} className="btn-primary">
-            Save Order
+          <button
+            onClick={handleSubmit}
+            className="btn-primary disabled:opacity-60"
+            disabled={saving || loading}
+            aria-busy={saving}
+          >
+            {saving ? 'Saving…' : 'Save Order'}
           </button>
         </div>
       </div>

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { useParams } from "next/navigation";
 import { API_BASE_URL } from "../../utils/api";
 import Header from "../../components/header";
@@ -9,8 +9,12 @@ import Navbar from "../../components/Navbar";
 import MobileTopBar from "../../components/HomePageTop";
 import Footer from "../../components/Footer";
 import { Checkbox } from "@mui/material";
+import Script from "next/script";
+import { SafeImg } from "../../components/SafeImage";
 
-// ---- Frontend key helper ----
+/* ──────────────────────────────────────────────────────────────────────────
+   Frontend key helper (adds X-Frontend-Key to requests)
+   ────────────────────────────────────────────────────────────────────────── */
 const FRONTEND_KEY = (process.env.NEXT_PUBLIC_FRONTEND_KEY || "").trim();
 const withFrontendKey = (init: RequestInit = {}): RequestInit => {
   const headers = new Headers(init.headers || {});
@@ -18,8 +22,9 @@ const withFrontendKey = (init: RequestInit = {}): RequestInit => {
   return { ...init, headers };
 };
 
-// ------------------------------------------
-
+/* ──────────────────────────────────────────────────────────────────────────
+   Types
+   ────────────────────────────────────────────────────────────────────────── */
 type BlogPost = {
   id: string | number;
   blog_id?: string | number;
@@ -47,7 +52,9 @@ type CommentItem = {
   blog_slug?: string | null;
 };
 
-// ---- Validation caps ----
+/* ──────────────────────────────────────────────────────────────────────────
+   Validation caps
+   ────────────────────────────────────────────────────────────────────────── */
 const MAX_NAME = 30;
 const MAX_EMAIL = 50;
 const MAX_COMMENT = 175;
@@ -79,14 +86,14 @@ export default function BlogPage() {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [canScroll, setCanScroll] = useState({ left: false, right: false });
 
-  const updateScrollAffordance = () => {
+  const updateScrollAffordance = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     const { scrollLeft, clientWidth, scrollWidth } = el;
     const atStart = scrollLeft <= 0;
     const atEnd = scrollLeft + clientWidth >= scrollWidth - 1;
     setCanScroll({ left: !atStart, right: !atEnd });
-  };
+  }, []);
 
   const scrollByCards = (dir: number) => {
     const el = scrollRef.current;
@@ -112,13 +119,14 @@ export default function BlogPage() {
       el.removeEventListener("scroll", onScroll);
       ro.disconnect();
     };
-  }, [comments.length]);
+  }, [comments.length, updateScrollAffordance]);
 
-  // ----- Load specific blog by ID first; on 404, try slug -----
+  /* ──────────────────────────────────────────────────────────────────────
+     Load specific blog by ID first; on 404, try slug (with abort safety)
+     ────────────────────────────────────────────────────────────────────── */
   useEffect(() => {
     if (!blogIdOrSlug) return;
-
-    let alive = true;
+    const controller = new AbortController();
 
     (async () => {
       setLoading(true);
@@ -126,18 +134,16 @@ export default function BlogPage() {
 
       const tryFetch = async (query: string) => {
         const url = `${API_BASE_URL}/api/show-specific-blog/?${query}&all=1`;
-        const res = await fetch(url, withFrontendKey());
+        const res = await fetch(url, withFrontendKey({ cache: "no-store", signal: controller.signal }));
         return { res, url };
       };
 
       try {
         // 1) Try as blog_id (what your route expects)
-        let { res, url } = await tryFetch(
-          `blog_id=${encodeURIComponent(blogIdOrSlug)}`
-        );
+        let { res, url } = await tryFetch(`blog_id=${encodeURIComponent(blogIdOrSlug)}`);
 
         if (res.status === 404) {
-          // 2) Retry as slug (in case your path segment is actually the slug)
+          // 2) Retry as slug
           ({ res, url } = await tryFetch(`slug=${encodeURIComponent(blogIdOrSlug)}`));
         }
 
@@ -146,7 +152,6 @@ export default function BlogPage() {
           try {
             body = await res.text();
           } catch {}
-          // eslint-disable-next-line no-console
           console.error("show-specific-blog", res.status, url, body || "(no body)");
         }
 
@@ -157,9 +162,7 @@ export default function BlogPage() {
         }
 
         if (res.status === 404) {
-          throw new Error(
-            "Blog not found or unpublished (even with all=1). Check the ID/slug or publish state."
-          );
+          throw new Error("Blog not found or unpublished (even with all=1). Check the ID/slug or publish state.");
         }
 
         if (!res.ok) {
@@ -168,29 +171,27 @@ export default function BlogPage() {
 
         const data = (await res.json()) as BlogPost;
 
-        if (alive) {
-          const normalized: BlogPost = {
-            ...data,
-            id: (data as any).blog_id ?? data.id,
-          };
-          setArticle(normalized);
-        }
+        const normalized: BlogPost = {
+          ...data,
+          id: (data as any).blog_id ?? data.id,
+        };
+        setArticle(normalized);
       } catch (e: any) {
-        if (alive) {
+        if (e?.name !== "AbortError") {
           setLoadError(e?.message || "Failed to load blog");
           setArticle(null);
         }
       } finally {
-        if (alive) setLoading(false);
+        setLoading(false);
       }
     })();
 
-    return () => {
-      alive = false;
-    };
+    return () => controller.abort();
   }, [blogIdOrSlug]);
 
-  // ----- Remember me: hydrate on mount -----
+  /* ──────────────────────────────────────────────────────────────────────
+     Remember me: hydrate on mount
+     ────────────────────────────────────────────────────────────────────── */
   useEffect(() => {
     try {
       const cached = localStorage.getItem("blog_comment_profile");
@@ -209,10 +210,12 @@ export default function BlogPage() {
     }
   }, []);
 
-  // ----- Fetch comments whenever the active article changes -----
+  /* ──────────────────────────────────────────────────────────────────────
+     Fetch comments whenever the active article changes (with abort)
+     ────────────────────────────────────────────────────────────────────── */
   useEffect(() => {
     if (!article?.id) return;
-    let alive = true;
+    const controller = new AbortController();
 
     const normalize = (raw: any): CommentItem | null => {
       if (!raw) return null;
@@ -235,10 +238,8 @@ export default function BlogPage() {
       setCommentsError(null);
       try {
         const res = await fetch(
-          `${API_BASE_URL}/api/show-all-comments/?blog_id=${encodeURIComponent(
-            String(article.id)
-          )}`,
-          withFrontendKey()
+          `${API_BASE_URL}/api/show-all-comments/?blog_id=${encodeURIComponent(String(article.id))}`,
+          withFrontendKey({ cache: "no-store", signal: controller.signal })
         );
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
@@ -247,15 +248,15 @@ export default function BlogPage() {
           .filter(Boolean) as CommentItem[];
         setComments(list);
       } catch (e: any) {
-        setCommentsError(e?.message || "Failed to load comments");
+        if (e?.name !== "AbortError") {
+          setCommentsError(e?.message || "Failed to load comments");
+        }
       } finally {
-        if (alive) setCommentsLoading(false);
+        setCommentsLoading(false);
       }
     })();
 
-    return () => {
-      alive = false;
-    };
+    return () => controller.abort();
   }, [article]);
 
   const publishedAt =
@@ -264,7 +265,9 @@ export default function BlogPage() {
     (article?.updated_at as string) ||
     "";
 
-  // ---- Client-side validation ----
+  /* ──────────────────────────────────────────────────────────────────────
+     Client-side validation
+     ────────────────────────────────────────────────────────────────────── */
   const validateForm = () => {
     const name = form.name.trim();
     const email = form.email.trim();
@@ -376,19 +379,68 @@ export default function BlogPage() {
     }
   };
 
-  const formatDate = (d: string) => {
-    const dt = new Date(d);
-    if (isNaN(dt.getTime())) return d;
-    return dt.toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
+  const formatDate = useMemo(
+    () => (d: string) => {
+      const dt = new Date(d);
+      if (isNaN(dt.getTime())) return d;
+      return dt.toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      });
+    },
+    []
+  );
+
+  /* ──────────────────────────────────────────────────────────────────────
+     Structured data (SEO): Article + Breadcrumbs
+     ────────────────────────────────────────────────────────────────────── */
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "";
+  const canonicalPath = `${siteUrl}/blog/${encodeURIComponent(blogIdOrSlug || "")}`;
+
+  const articleLd = article
+    ? {
+        "@context": "https://schema.org",
+        "@type": "Article",
+        headline: article.title,
+        description: article.metaDescription || article.description || undefined,
+        author: article.author
+          ? { "@type": "Person", name: article.author }
+          : undefined,
+        datePublished: publishedAt || undefined,
+        dateModified: article.updated_at || undefined,
+        image: article.thumbnail ? [article.thumbnail] : undefined,
+        mainEntityOfPage: { "@type": "WebPage", "@id": canonicalPath },
+      }
+    : null;
+
+  const breadcrumbLd = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "Home", item: `${siteUrl}/` },
+      { "@type": "ListItem", position: 2, name: "Blog", item: `${siteUrl}/blog` },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: article?.title || "Post",
+        item: canonicalPath,
+      },
+    ],
   };
 
+  /* ──────────────────────────────────────────────────────────────────────
+     Render
+     ────────────────────────────────────────────────────────────────────── */
   if (loading) {
     return (
-      <div className="max-w-3xl mx-auto p-6 text-sm text-gray-600">Loading…</div>
+      <div
+        className="max-w-3xl mx-auto p-6 text-sm text-gray-600"
+        role="status"
+        aria-live="polite"
+      >
+        Loading…
+      </div>
     );
   }
 
@@ -404,8 +456,14 @@ export default function BlogPage() {
 ${API_BASE_URL}/api/show-specific-blog/?slug=${String(blogIdOrSlug)}&all=1`}
           </pre>
           <ul className="list-disc pl-5 mt-2 text-gray-700">
-            <li>Verify the value exists as either <code>blog_id</code> or <code>slug</code> in DB.</li>
-            <li>If you still get 404, ensure the permission key isn’t causing a masked error and that the API route is reachable.</li>
+            <li>
+              Verify the value exists as either <code>blog_id</code> or{" "}
+              <code>slug</code> in DB.
+            </li>
+            <li>
+              If you still get 404, ensure the permission key isn’t causing a masked
+              error and that the API route is reachable.
+            </li>
           </ul>
         </div>
       </div>
@@ -414,9 +472,7 @@ ${API_BASE_URL}/api/show-specific-blog/?slug=${String(blogIdOrSlug)}&all=1`}
 
   if (!article) {
     return (
-      <div className="max-w-3xl mx-auto p-6 text-sm text-gray-600">
-        No article found.
-      </div>
+      <div className="max-w-3xl mx-auto p-6 text-sm text-gray-600">No article found.</div>
     );
   }
 
@@ -430,6 +486,20 @@ ${API_BASE_URL}/api/show-specific-blog/?slug=${String(blogIdOrSlug)}&all=1`}
           Warning: NEXT_PUBLIC_FRONTEND_KEY is empty; backend may reject requests if FrontendOnlyPermission is enabled.
         </div>
       )}
+
+      {/* SEO: JSON-LD */}
+      {articleLd && (
+        <Script
+          id="article-jsonld"
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(articleLd) }}
+        />
+      )}
+      <Script
+        id="breadcrumb-jsonld"
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd) }}
+      />
 
       <Header />
       <LogoSection />
@@ -450,27 +520,40 @@ ${API_BASE_URL}/api/show-specific-blog/?slug=${String(blogIdOrSlug)}&all=1`}
           <p className="text-sm text-black mb-4">Written by: {article.author}</p>
         )}
 
-        {/* Blog Image */}
+        {/* Blog Image (SafeImg for perf + fallback) */}
         {article.thumbnail && (
-          <img
-            src={article.thumbnail}
-            alt={article.title}
-            className="w-full md:w-2/3 lg:w-1/2 h-auto rounded mb-6 bg-white mx-auto block"
-          />
+          <div className="w-full md:w-2/3 lg:w-1/2 mx-auto mb-6">
+            <SafeImg
+              src={article.thumbnail}
+              alt={article.title}
+              className="w-full h-auto rounded bg-white block"
+              loading="lazy"
+              onError={(e) => {
+                e.currentTarget.onerror = null;
+                e.currentTarget.src = "/images/img1.png";
+              }}
+              overlay={false}
+            />
+          </div>
         )}
 
         {/* Blog Content (HTML) */}
-        <div
+        <article
+          aria-labelledby="post-title"
           className="prose max-w-none mb-6 prose-img:rounded prose-img:max-w-full prose-img:h-auto text-black text-lg sm:text-xl leading-loose tracking-wide"
           style={{ lineHeight: "2em" }}
-          dangerouslySetInnerHTML={{ __html: article.content || "" }}
-        />
+        >
+          <div id="post-title" className="sr-only">
+            {article.title}
+          </div>
+          <div dangerouslySetInnerHTML={{ __html: article.content || "" }} />
+        </article>
 
         {/* Published Date */}
         {(article.publishDate || article.created_at || article.updated_at) && (
           <p className="text-sm text-gray-500">
-            Published at:{" "}
-            {article.publishDate || article.created_at || article.updated_at}
+            Published:&nbsp;
+            <time dateTime={publishedAt}>{formatDate(publishedAt)}</time>
           </p>
         )}
       </div>
@@ -478,9 +561,7 @@ ${API_BASE_URL}/api/show-specific-blog/?slug=${String(blogIdOrSlug)}&all=1`}
       {/* ---- Comment Box (above footer) ---- */}
       <section className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 pb-8 mb-5">
         <div className="w-full rounded-lg border border-gray-200 bg-white p-4 sm:p-6">
-          <h2 className="text-xl sm:text-2xl font-semibold text-gray-900 mb-2">
-            Leave a Reply
-          </h2>
+          <h2 className="text-xl sm:text-2xl font-semibold text-gray-900 mb-2">Leave a Reply</h2>
           <p className="text-sm text-gray-600 mb-6">
             Your email address will not be published. Required fields are marked{" "}
             <span className="text-red-500">*</span>
@@ -489,74 +570,69 @@ ${API_BASE_URL}/api/show-specific-blog/?slug=${String(blogIdOrSlug)}&all=1`}
           <form onSubmit={handleSubmit} className="space-y-5" noValidate>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="mb-3">
-                <label className="block text-sm font-medium text-black mb-1">
+                <label htmlFor="name" className="block text-sm font-medium text-black mb-1">
                   Name <span className="text-red-500">*</span>
                 </label>
                 <input
+                  id="name"
                   type="text"
                   required
                   maxLength={MAX_NAME}
                   value={form.name}
                   aria-invalid={form.name.trim().length > MAX_NAME}
-                  onChange={(e) =>
-                    setForm((s) => ({ ...s, name: e.target.value }))
-                  }
+                  onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))}
                   placeholder="Name"
+                  autoComplete="name"
                   className="w-full rounded border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2 focus:ring-[#891F1A] text-black"
                 />
-                <p className="mt-1 text-xs text-gray-500">
-                  {form.name.trim().length}/{MAX_NAME}
-                </p>
+                <p className="mt-1 text-xs text-gray-500">{form.name.trim().length}/{MAX_NAME}</p>
               </div>
               <div>
-                <label className="block text-sm font-medium text-black mb-1">
+                <label htmlFor="email" className="block text-sm font-medium text-black mb-1">
                   Email <span className="text-red-500">*</span>
                 </label>
                 <input
+                  id="email"
                   type="email"
                   required
                   maxLength={MAX_EMAIL}
                   value={form.email}
                   aria-invalid={form.email.trim().length > MAX_EMAIL}
-                  onChange={(e) =>
-                    setForm((s) => ({ ...s, email: e.target.value }))
-                  }
+                  onChange={(e) => setForm((s) => ({ ...s, email: e.target.value }))}
                   placeholder="Email"
+                  autoComplete="email"
                   className="w-full rounded border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2 focus:ring-[#891F1A] text-black"
                 />
-                <p className="mt-1 text-xs text-gray-500">
-                  {form.email.trim().length}/{MAX_EMAIL}
-                </p>
+                <p className="mt-1 text-xs text-gray-500">{form.email.trim().length}/{MAX_EMAIL}</p>
               </div>
               <div>
-                <label className="block text-sm font-medium text-black mb-1">
+                <label htmlFor="website" className="block text-sm font-medium text-black mb-1">
                   Website
                 </label>
                 <input
+                  id="website"
                   type="url"
                   value={form.website}
-                  onChange={(e) =>
-                    setForm((s) => ({ ...s, website: e.target.value }))
-                  }
+                  onChange={(e) => setForm((s) => ({ ...s, website: e.target.value }))}
                   placeholder="Website"
+                  autoComplete="url"
                   className="w-full rounded border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2 focus:ring-[#891F1A] text-black"
                 />
               </div>
             </div>
 
             <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-800 mb-1">
+              <label htmlFor="comment" className="block text-sm font-medium text-gray-800 mb-1">
                 Add Comment <span className="text-red-500">*</span>
               </label>
               <textarea
+                id="comment"
                 required
                 rows={6}
                 maxLength={MAX_COMMENT}
                 value={form.comment}
                 aria-invalid={form.comment.trim().length > MAX_COMMENT}
-                onChange={(e) =>
-                  setForm((s) => ({ ...s, comment: e.target.value }))
-                }
+                onChange={(e) => setForm((s) => ({ ...s, comment: e.target.value }))}
                 placeholder="Add Comment"
                 className="w-full rounded border border-gray-300 bg-white px-3 py-2 outline-none focus:ring-2 focus:ring-[#891F1A] text-black resize-none"
               />
@@ -569,22 +645,17 @@ ${API_BASE_URL}/api/show-specific-blog/?slug=${String(blogIdOrSlug)}&all=1`}
             <div className="flex items-center gap-2 mb-4">
               <Checkbox
                 checked={form.remember}
-                onChange={(e) =>
-                  setForm((s) => ({ ...s, remember: e.target.checked }))
-                }
-                sx={{
-                  color: "#891F1A",
-                  "&.Mui-checked": { color: "#891F1A" },
-                }}
+                onChange={(e) => setForm((s) => ({ ...s, remember: e.target.checked }))}
+                inputProps={{ id: "remember", "aria-label": "Remember my details for next time" }}
+                sx={{ color: "#891F1A", "&.Mui-checked": { color: "#891F1A" } }}
               />
               <label htmlFor="remember" className="text-sm text-gray-700">
-                Save my name, email and website in this browser for the next time I
-                comment.
+                Save my name, email and website in this browser for the next time I comment.
               </label>
             </div>
 
             {submitMsg && (
-              <p className="text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded px-3 py-2 mb-2">
+              <p role="status" className="text-sm text-gray-700 bg-gray-50 border border-gray-200 rounded px-3 py-2 mb-2">
                 {submitMsg}
               </p>
             )}
@@ -604,7 +675,7 @@ ${API_BASE_URL}/api/show-specific-blog/?slug=${String(blogIdOrSlug)}&all=1`}
       {/* ---- /Comment Box ---- */}
 
       {/* ---- Comment Cards ---- */}
-      <section className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 pb-12 mb-30 ">
+      <section className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 pb-12 mb-30">
         <div className="flex items-center justify-between mb-4 gap-3">
           <h3 className="text-lg sm:text-xl font-semibold text-gray-900">
             {commentsLoading
@@ -655,10 +726,7 @@ ${API_BASE_URL}/api/show-specific-blog/?slug=${String(blogIdOrSlug)}&all=1`}
             ref={scrollRef}
             className="overflow-x-auto overscroll-x-contain pb-2 -mx-2 px-2"
           >
-            <div
-              className="flex gap-6 snap-x snap-mandatory"
-              style={{ scrollBehavior: "smooth" }}
-            >
+            <div className="flex gap-6 snap-x snap-mandatory" style={{ scrollBehavior: "smooth" }}>
               {comments.map((c) => (
                 <article
                   key={c.id}
@@ -668,9 +736,7 @@ ${API_BASE_URL}/api/show-specific-blog/?slug=${String(blogIdOrSlug)}&all=1`}
                 >
                   <div className="flex items-center gap-4 mb-3">
                     <div className="min-w-0">
-                      <p className="text-sm font-semibold text-gray-900 truncate">
-                        {c.name}
-                      </p>
+                      <p className="text-sm font-semibold text-gray-900 truncate">{c.name}</p>
                       <p className="text-xs text-gray-500">{formatDate(c.date)}</p>
                     </div>
                   </div>
@@ -684,7 +750,7 @@ ${API_BASE_URL}/api/show-specific-blog/?slug=${String(blogIdOrSlug)}&all=1`}
                       className="mt-3 inline-block text-sm underline underline-offset-4 text-gray-700 hover:text-gray-900 break-all"
                       href={c.website}
                       target="_blank"
-                      rel="noopener noreferrer"
+                      rel="noopener noreferrer ugc nofollow"
                     >
                       {c.website}
                     </a>
@@ -694,7 +760,7 @@ ${API_BASE_URL}/api/show-specific-blog/?slug=${String(blogIdOrSlug)}&all=1`}
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6 max-h-[100px]">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {comments.map((c) => (
               <article
                 key={c.id}
@@ -703,9 +769,7 @@ ${API_BASE_URL}/api/show-specific-blog/?slug=${String(blogIdOrSlug)}&all=1`}
               >
                 <div className="flex items-center gap-4 mb-3">
                   <div className="min-w-0">
-                    <p className="text-sm font-semibold text-gray-900 truncate">
-                      {c.name}
-                    </p>
+                    <p className="text-sm font-semibold text-gray-900 truncate">{c.name}</p>
                     <p className="text-xs text-gray-500">{formatDate(c.date)}</p>
                   </div>
                 </div>
@@ -717,7 +781,7 @@ ${API_BASE_URL}/api/show-specific-blog/?slug=${String(blogIdOrSlug)}&all=1`}
                     className="mt-3 inline-block text-sm underline underline-offset-4 text-gray-700 hover:text-gray-900 break-all"
                     href={c.website}
                     target="_blank"
-                    rel="noopener noreferrer"
+                    rel="noopener noreferrer ugc nofollow"
                   >
                     {c.website}
                   </a>
@@ -725,6 +789,13 @@ ${API_BASE_URL}/api/show-specific-blog/?slug=${String(blogIdOrSlug)}&all=1`}
               </article>
             ))}
           </div>
+        )}
+
+        {/* Non-blocking comments load error (kept visible for diagnostics) */}
+        {commentsError && (
+          <p className="mt-3 text-sm text-red-600" role="status">
+            {commentsError}
+          </p>
         )}
       </section>
       {/* ---- /Comment Cards ---- */}

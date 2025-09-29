@@ -1,33 +1,23 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
-import {
-  ChevronLeft,
-  ChevronRight,
-  ChevronDown,
-  Truck,
-  Calendar,
-} from "lucide-react";
-import Head from "next/head";
+import React, { useCallback, useEffect, useMemo, useRef, useState, memo } from "react";
+import { useParams } from "next/navigation";
 import Toastify from "toastify-js";
 import "toastify-js/src/toastify.css";
 import { API_BASE_URL } from "../../../utils/api";
 import Header from "../../../components/header";
 import Navbar from "../../../components/Navbar";
 import LogoSection from "../../../components/LogoSection";
-import MobileTopBar from "../../../components/HomePageTop";
+import HomePageTop from "../../../components/HomePageTop";
 import CardActionButtons from "../../../components/CardActionButtons";
 import { ChatBot } from "../../../components/ChatBot";
 import Footer from "../../../components/Footer";
-import HomePageTop from "../../../components/HomePageTop";
-
-import Link from 'next/link';
+import Link from "next/link";
+import Script from "next/script";
 import { SafeImg } from "../../../components/SafeImage";
 
 /* ──────────────────────────────────────────────────────────────────────────
    🔐 Frontend key helper (adds X-Frontend-Key to requests)
-   Mirrors your ProductDetailPage style
    ────────────────────────────────────────────────────────────────────────── */
 const FRONTEND_KEY = (process.env.NEXT_PUBLIC_FRONTEND_KEY || "").trim();
 const withFrontendKey = (init: RequestInit = {}): RequestInit => {
@@ -37,7 +27,7 @@ const withFrontendKey = (init: RequestInit = {}): RequestInit => {
 };
 
 /* ──────────────────────────────────────────────────────────────────────────
-   🆔 Stable device token (same key as ProductDetailPage)
+   🆔 Stable device token
    ────────────────────────────────────────────────────────────────────────── */
 function getOrCreateUserToken() {
   if (typeof window === "undefined") return "";
@@ -58,40 +48,82 @@ type ProductCard = {
   image: string;
   badge: string;
   rating: number;
-  rating_count: number; // ← add this
+  rating_count: number;
 };
 
-
-const StarRating = ({ rating, count = 0 }: { rating: number; count?: number }) => {
+/* ──────────────────────────────────────────────────────────────────────────
+   ⭐ Accessible, memoized rating component (reduces re-renders)
+   ────────────────────────────────────────────────────────────────────────── */
+const StarRating = memo(function StarRating({
+  rating,
+  count = 0,
+}: {
+  rating: number;
+  count?: number;
+}) {
   const fullStarUrl =
     "https://img.icons8.com/?size=100&id=Jy3TrLVOr9Ac&format=png&color=891F1A";
   const halfStarUrl =
     "https://img.icons8.com/?size=100&id=m6oA37oGaOEP&format=png&color=891F1A";
   const emptyStarUrl =
-    "https://img.icons8.com/?size=100&id=103&format=png&color=891F1A"; // black empty star
+    "https://img.icons8.com/?size=100&id=103&format=png&color=891F1A";
 
   // clamp to [0,5] and round to nearest 0.5
   const r = Math.max(0, Math.min(5, Math.round((Number(rating) || 0) * 2) / 2));
 
   return (
-    <div className="flex items-center gap mt-1" aria-label={`Rating: ${r} out of 5`}>
+    <div
+      className="flex items-center gap mt-1"
+      aria-label={`Rated ${r} out of 5 based on ${count} reviews`}
+      role="img"
+    >
       {Array.from({ length: 5 }).map((_, i) => {
         const idx = i + 1;
-        if (r >= idx) return <SafeImg key={i} src={fullStarUrl} alt="Full star" className="w-4 h-4" loading="lazy" />;
-        if (r >= idx - 0.5) return <SafeImg key={i} src={halfStarUrl} alt="Half star" className="w-4 h-4" loading="lazy" />;
-        return <SafeImg key={i} src={emptyStarUrl} alt="Empty star" className="w-4 h-4" loading="lazy" />;
+        if (r >= idx)
+          return (
+            <SafeImg
+              key={i}
+              src={fullStarUrl}
+              alt=""
+              className="w-4 h-4"
+              loading="lazy"
+              aria-hidden="true"
+            />
+          );
+        if (r >= idx - 0.5)
+          return (
+            <SafeImg
+              key={i}
+              src={halfStarUrl}
+              alt=""
+              className="w-4 h-4"
+              loading="lazy"
+              aria-hidden="true"
+            />
+          );
+        return (
+          <SafeImg
+            key={i}
+            src={emptyStarUrl}
+            alt=""
+            className="w-4 h-4"
+            loading="lazy"
+            aria-hidden="true"
+          />
+        );
       })}
       <span className="text-xs text-gray-600 ml-1">({count})</span>
     </div>
   );
-};
-
+});
 
 export default function SubCategoryPage() {
-  const BATCH_SIZE = 100;
+  const BATCH_SIZE = 100; // keep behavior stable
 
-  const { category, subcategory } = useParams() as { category?: string; subcategory?: string };
-  const router = useRouter();
+  const { category, subcategory } = useParams() as {
+    category?: string;
+    subcategory?: string;
+  };
 
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -104,8 +136,8 @@ export default function SubCategoryPage() {
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
   const [cartIds, setCartIds] = useState<Set<string>>(new Set());
 
-  const LS_FAVORITES = useMemo(() => "cc_favorites", []);
-  const LS_CART = useMemo(() => "cc_cart", []);
+  const LS_FAVORITES = "cc_favorites";
+  const LS_CART = "cc_cart";
 
   /* ──────────────────────────────────────────────────────────────────────
      Load persisted favourites/cart
@@ -119,22 +151,21 @@ export default function SubCategoryPage() {
     } catch {
       // ignore
     }
-  }, [LS_FAVORITES, LS_CART]);
+  }, []);
 
   const persistFavorites = useCallback((s: Set<string>) => {
     localStorage.setItem(LS_FAVORITES, JSON.stringify(Array.from(s)));
-  }, [LS_FAVORITES]);
+  }, []);
 
   const persistCart = useCallback((s: Set<string>) => {
     localStorage.setItem(LS_CART, JSON.stringify(Array.from(s)));
-  }, [LS_CART]);
+  }, []);
 
   /* ──────────────────────────────────────────────────────────────────────
-     Data fetch (mirrors your “fetch all data like this” structure)
-     - show_nav_items: to locate current subcategory & its products
-     - show-product: to enrich with stock/price/details
+     Data fetch (parallel) with safe unmount handling
      ────────────────────────────────────────────────────────────────────── */
   useEffect(() => {
+    const controller = new AbortController();
     const fetchData = async () => {
       if (!category || !subcategory) {
         setNotFound(true);
@@ -146,8 +177,8 @@ export default function SubCategoryPage() {
         setLoading(true);
 
         const [navRes, stockRes] = await Promise.all([
-          fetch(`${API_BASE_URL}/api/show_nav_items/`, withFrontendKey({ cache: "no-store" })),
-          fetch(`${API_BASE_URL}/api/show-product/`, withFrontendKey({ cache: "no-store" })),
+          fetch(`${API_BASE_URL}/api/show_nav_items/`, withFrontendKey({ cache: "no-store", signal: controller.signal })),
+          fetch(`${API_BASE_URL}/api/show-product/`, withFrontendKey({ cache: "no-store", signal: controller.signal })),
         ]);
 
         if (!navRes.ok || !stockRes.ok) throw new Error("Failed to fetch data");
@@ -190,30 +221,29 @@ export default function SubCategoryPage() {
             badge,
             rating: Number((prod.rating ?? stockMatch?.rating) ?? 0),
             rating_count: Number((prod.rating_count ?? stockMatch?.rating_count) ?? 0),
-
           };
         });
-
 
         setAllProducts(formatted);
         setProducts(formatted.slice(0, BATCH_SIZE));
         setVisibleCount(BATCH_SIZE);
         setNotFound(false);
-        setLoading(false);
       } catch (err) {
-        console.error("❌ Failed to fetch subcategory products:", err);
-        setNotFound(true);
+        if ((err as any)?.name !== "AbortError") {
+          console.error("❌ Failed to fetch subcategory products:", err);
+          setNotFound(true);
+        }
+      } finally {
         setLoading(false);
       }
     };
 
     fetchData();
+    return () => controller.abort();
   }, [category, subcategory]);
 
   /* ──────────────────────────────────────────────────────────────────────
-     Cart API (same contract as Product Detail page)
-     - Add: /api/save-cart/
-     - Remove: /api/delete-cart-item/
+     Cart API
      ────────────────────────────────────────────────────────────────────── */
   const addToCart = useCallback(
     async (
@@ -233,7 +263,7 @@ export default function SubCategoryPage() {
               product_id: productId,
               quantity: 1,
               selected_size: selectedSize,
-              selected_attributes: selectedAttrOptions, // grid passes null for now
+              selected_attributes: selectedAttrOptions,
             }),
           })
         );
@@ -248,10 +278,11 @@ export default function SubCategoryPage() {
           backgroundColor: res.ok
             ? "linear-gradient(to right, #af4c4cff, #d30000ff)"
             : "linear-gradient(to right, #b00020, #ff5a5a)",
-            style: {
-            borderRadius: "0.75rem", // same as Tailwind rounded-xl
+          style: {
+            borderRadius: "0.75rem",
             padding: "12px 20px",
           },
+          ariaLive: "polite",
         }).showToast();
 
         if (res.ok) {
@@ -270,11 +301,9 @@ export default function SubCategoryPage() {
           gravity: "top",
           position: "right",
           backgroundColor: "linear-gradient(to right, #b00020, #ff5a5a)",
-          style: {
-          borderRadius: "0.75rem", // same as Tailwind rounded-xl
-          padding: "12px 20px",
-        },
-      }).showToast();
+          style: { borderRadius: "0.75rem", padding: "12px 20px" },
+          ariaLive: "assertive",
+        }).showToast();
       }
     },
     [persistCart]
@@ -304,16 +333,14 @@ export default function SubCategoryPage() {
           });
 
           Toastify({
-            text: " Removed from cart",
+            text: "Removed from cart",
             duration: 3000,
             gravity: "top",
             position: "right",
             backgroundColor: "linear-gradient(to right, #af4c4cff, #d30000ff)",
-            style: {
-            borderRadius: "0.75rem", // same as Tailwind rounded-xl
-            padding: "12px 20px",
-          },
-        }).showToast();
+            style: { borderRadius: "0.75rem", padding: "12px 20px" },
+            ariaLive: "polite",
+          }).showToast();
         } else {
           Toastify({
             text: `❌ ${data?.error || "Try again!"}`,
@@ -321,6 +348,7 @@ export default function SubCategoryPage() {
             gravity: "top",
             position: "right",
             backgroundColor: "linear-gradient(to right, #b00020, #ff5a5a)",
+            ariaLive: "assertive",
           }).showToast();
         }
       } catch (error) {
@@ -331,11 +359,9 @@ export default function SubCategoryPage() {
           gravity: "top",
           position: "right",
           backgroundColor: "linear-gradient(to right, #b00020, #ff5a5a)",
-          style: {
-          borderRadius: "0.75rem", // same as Tailwind rounded-xl
-          padding: "12px 20px",
-        },
-      }).showToast();
+          style: { borderRadius: "0.75rem", padding: "12px 20px" },
+          ariaLive: "assertive",
+        }).showToast();
       }
     },
     [persistCart]
@@ -358,11 +384,9 @@ export default function SubCategoryPage() {
           gravity: "top",
           position: "right",
           backgroundColor: "linear-gradient(to right, #b00020, #ff5a5a)",
-          style: {
-          borderRadius: "0.75rem", // same as Tailwind rounded-xl
-          padding: "12px 20px",
-        },
-      }).showToast();
+          style: { borderRadius: "0.75rem", padding: "12px 20px" },
+          ariaLive: "polite",
+        }).showToast();
         return;
       }
 
@@ -391,10 +415,8 @@ export default function SubCategoryPage() {
       backgroundColor: ok
         ? "linear-gradient(to right, #af4c4cff, #d30000ff)"
         : "linear-gradient(to right, #b00020, #ff5a5a)",
-      style: {
-        borderRadius: "0.75rem", // same as Tailwind rounded-xl
-        padding: "12px 20px",
-      },
+      style: { borderRadius: "0.75rem", padding: "12px 20px" },
+      ariaLive: "polite",
     }).showToast();
   }, []);
 
@@ -406,12 +428,10 @@ export default function SubCategoryPage() {
 
       const now = Date.now();
       if (favInvokeAt.current[id] && now - favInvokeAt.current[id] < 400) {
-        // swallow duplicate rapid invocations
         return;
       }
       favInvokeAt.current[id] = now;
 
-      // Functional update so we can compute isAdding from prev (no stale closure)
       setFavoriteIds((prev) => {
         const next = new Set(prev);
         const isAdding = !prev.has(id);
@@ -419,7 +439,6 @@ export default function SubCategoryPage() {
         if (isAdding) next.add(id);
         else next.delete(id);
 
-        // Single toast per burst
         toastOnce(
           `fav:${id}`,
           isAdding ? "Added to favourites" : "Removed from favourites",
@@ -442,11 +461,16 @@ export default function SubCategoryPage() {
     setVisibleCount(nextCount);
   };
 
+  const pageTitle =
+    subcategory?.toString().replace(/-/g, " ").trim() || "Products";
+
   if (loading) {
     return (
-    <div
+      <div
         className="bg-white overflow-x-hidden"
-        style={{ fontFamily: 'var(--font-poppins), Arial, sans-serif' }}
+        style={{ fontFamily: "var(--font-poppins), Arial, sans-serif" }}
+        aria-busy="true"
+        aria-live="polite"
       >
         <Header />
         <LogoSection />
@@ -458,156 +482,231 @@ export default function SubCategoryPage() {
 
   if (notFound) {
     return (
-  <div
-      className="bg-white overflow-x-hidden lg:overflow-y-hidden"
-      style={{ fontFamily: 'var(--font-poppins), Arial, sans-serif' }}
-    >
-      <Header />
-      <LogoSection />
-      <HomePageTop />
-
-      <main
-        className="grid min-h-[100svh] justify-center mt-10 px-4 sm:px-6 lg:px-8 py-12 sm:py-16 lg:py-24"
-        aria-labelledby="page-title"
+      <div
+        className="bg-white overflow-x-hidden lg:overflow-y-hidden"
+        style={{ fontFamily: "var(--font-poppins), Arial, sans-serif" }}
       >
-        <section className="text-center max-w-2xl w-full">
-          {/* p → Regular */}
-          <p className="mb-4 sm:mb-6 tracking-[0.25em] text-[10px] sm:text-xs font-normal text-[#891F1A]">
-            OOPS! PAGE NOT FOUND
-          </p>
+        <Header />
+        <LogoSection />
+        <HomePageTop />
 
-          {/* h1 → Bold */}
-          <h1
-            id="page-title"
-            aria-label="404"
-            className="relative mx-auto mb-4 sm:mb-6 flex items-center justify-center font-bold leading-none text-[#891F1A] select-none"
-          >
-            {/* span digits → Bold */}
-            <span className="[-webkit-text-size-adjust:100%] [text-wrap:nowrap] font-bold -mr-2 sm:-mr-4 text-[clamp(6rem,22vw,12rem)]">
-              4
-            </span>
-            <span className="[-webkit-text-size-adjust:100%] [text-wrap:nowrap] font-bold -mr-2 sm:-mr-4 text-[clamp(6rem,22vw,12rem)]">
-              0
-            </span>
-            <span className="[-webkit-text-size-adjust:100%] [text-wrap:nowrap] font-bold text-[clamp(6rem,22vw,12rem)]">
-              4
-            </span>
-          </h1>
+        <main
+          className="grid min-h-[100svh] justify-center mt-10 px-4 sm:px-6 lg:px-8 py-12 sm:py-16 lg:py-24"
+          aria-labelledby="page-title"
+          role="main"
+        >
+          <section className="text-center max-w-2xl w-full">
+            <p className="mb-4 sm:mb-6 tracking-[0.25em] text-[10px] sm:text-xs font-normal text-[#891F1A]">
+              OOPS! PAGE NOT FOUND
+            </p>
 
-          {/* p → Regular */}
-          <p className="mx-auto max-w-xl text-sm sm:text-base text-[#891F1A] font-normal px-2">
-            WE ARE SORRY, BUT THE PAGE YOU REQUESTED WAS NOT FOUND. 
-          </p>
-          {/* p → Regular */}
-          <p className="mx-auto max-w-xl text-sm sm:text-base text-[#891F1A] font-normal px-2">
-            It looks like you've navigated to the wrong URL.
-          </p>
-
-          <div className="mt-8 sm:mt-10 flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-3 sm:gap-4 w-full">
-            {/* a (Link) → Regular */}
-            <Link
-              href="/"
-              className="inline-flex justify-center rounded-xl border border-gray-300 px-5 py-2.5 text-sm font-normal text-[#891F1A] transition hover:bg-red-500 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+            <h1
+              id="page-title"
+              aria-label="404"
+              className="relative mx-auto mb-4 sm:mb-6 flex items-center justify-center font-bold leading-none text-[#891F1A] select-none"
             >
-              Go to Home
-            </Link>
+              <span className="[-webkit-text-size-adjust:100%] [text-wrap:nowrap] font-bold -mr-2 sm:-mr-4 text-[clamp(6rem,22vw,12rem)]">
+                4
+              </span>
+              <span className="[-webkit-text-size-adjust:100%] [text-wrap:nowrap] font-bold -mr-2 sm:-mr-4 text-[clamp(6rem,22vw,12rem)]">
+                0
+              </span>
+              <span className="[-webkit-text-size-adjust:100%] [text-wrap:nowrap] font-bold text-[clamp(6rem,22vw,12rem)]">
+                4
+              </span>
+            </h1>
 
-            {/* button → Medium */}
-            <button
-              type="button"
-              onClick={() => history.back()}
-              className="inline-flex justify-center rounded-xl bg-[#891F1A] px-5 py-2.5 text-sm font-medium text-white transition hover:bg-red-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
-            >
-              Go Back
-            </button>
-          </div>
-        </section>
-      </main>
-      <Footer />
-    </div>
+            <p className="mx-auto max-w-xl text-sm sm:text-base text-[#891F1A] font-normal px-2">
+              WE ARE SORRY, BUT THE PAGE YOU REQUESTED WAS NOT FOUND.
+            </p>
+            <p className="mx-auto max-w-xl text-sm sm:text-base text-[#891F1A] font-normal px-2">
+              It looks like you've navigated to the wrong URL.
+            </p>
+
+            <div className="mt-8 sm:mt-10 flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-3 sm:gap-4 w-full">
+              <Link
+                href="/"
+                className="inline-flex justify-center rounded-xl border border-gray-300 px-5 py-2.5 text-sm font-normal text-[#891F1A] transition hover:bg-red-500 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+              >
+                Go to Home
+              </Link>
+
+              <button
+                type="button"
+                onClick={() => history.back()}
+                className="inline-flex justify-center rounded-xl bg-[#891F1A] px-5 py-2.5 text-sm font-medium text-white transition hover:bg-red-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+              >
+                Go Back
+              </button>
+            </div>
+          </section>
+        </main>
+        <Footer />
+      </div>
     );
   }
 
+  /* ──────────────────────────────────────────────────────────────────────
+     JSON-LD (SEO): Breadcrumb + ItemList of products
+     ────────────────────────────────────────────────────────────────────── */
+  const breadcrumbLd = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      {
+        "@type": "ListItem",
+        position: 1,
+        name: "Home",
+        item: `${process.env.NEXT_PUBLIC_SITE_URL || ""}/`,
+      },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: category,
+        item: `${process.env.NEXT_PUBLIC_SITE_URL || ""}/home/${encodeURIComponent(
+          category || ""
+        )}`,
+      },
+      {
+        "@type": "ListItem",
+        position: 3,
+        name: pageTitle,
+        item: `${process.env.NEXT_PUBLIC_SITE_URL || ""}/home/${encodeURIComponent(
+          category || ""
+        )}/${encodeURIComponent(subcategory || "")}`,
+      },
+    ],
+  };
+
+  const itemListLd = {
+    "@context": "https://schema.org",
+    "@type": "ItemList",
+    name: pageTitle,
+    itemListElement: products.map((p, idx) => ({
+      "@type": "ListItem",
+      position: idx + 1,
+      url: `${process.env.NEXT_PUBLIC_SITE_URL || ""}/home/${encodeURIComponent(
+        category || ""
+      )}/${encodeURIComponent(subcategory || "")}/products/${p.id}`,
+      name: p.name,
+    })),
+  };
+
   return (
-    <div className="flex flex-col bg-white" style={{ fontFamily: "var(--font-poppins), Arial, sans-serif" }}>
+    <div
+      className="flex flex-col bg-white"
+      style={{ fontFamily: "var(--font-poppins), Arial, sans-serif" }}
+    >
       <Header />
       <LogoSection />
       <Navbar />
-      <MobileTopBar />
+      <HomePageTop />
+
+      {/* SEO: structured data */}
+      <Script
+        id="breadcrumb-jsonld"
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd) }}
+      />
+      <Script
+        id="itemlist-jsonld"
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(itemListLd) }}
+      />
 
       <div className="bg-gradient-to-b from-white via-gray-50 to-gray-100 min-h-screen py-10 px-4 sm:px-10">
-        <div
-          className="bg-gradient-to-r from-red-100 via-white to-red-50 rounded-xl shadow-md p-6 sm:p-10 mb-10 text-center relative overflow-hidden"
-        >
+        <div className="bg-gradient-to-r from-red-100 via-white to-red-50 rounded-xl shadow-md p-6 sm:p-10 mb-10 text-center relative overflow-hidden">
           <h1 className="text-4xl font-extrabold text-red-600 tracking-tight mb-2 capitalize">
-            {subcategory?.toString().replace(/-/g, " ")}
+            {pageTitle}
           </h1>
-          <p className="text-gray-600 text-lg">Browse popular products in this subcategory.</p>
+          <p className="text-gray-600 text-lg">
+            Browse popular products in this subcategory.
+          </p>
           <div className="absolute bottom-0 left-1/2 w-1/2 h-1 bg-red-500 translate-x-[-50%] animate-pulse" />
         </div>
 
         {/* Grid */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-8">
-          {products.map((product) => (
-            <div
-              key={product.id}
-              className="group relative overflow-hidden transition-transform"
-              tabIndex={0}
-            >
-              {/* Stock badge */}
-              <span
-                className={`absolute top-2 left-2  text-xs px-3 py-1 rounded-full z-20 ${
-                  product.badge?.toLowerCase().includes("out") ? "bg-white/20 bg-blur text-[#891F1A] text-bold" : "bg-[#891F1A]/70 bg-blur text-white"
-                }`}
-              >
-                {product.badge}
-              </span>
+        <section aria-labelledby="products-heading">
+          <h2 id="products-heading" className="sr-only">
+            Products list
+          </h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-8">
+            {products.map((product) => {
+              const detailHref = `/home/${encodeURIComponent(
+                category!
+              )}/${encodeURIComponent(subcategory!)}/products/${product.id}`;
 
-              {/* Action buttons (top-right) */}
-              <CardActionButtons
-                isFavorite={favoriteIds.has(product.id)}
-                isInCart={cartIds.has(product.id)}
-                onToggleFavorite={handleToggleFavorite(product.id)}
-                onAddToCart={handleCartToggle(product)}
-              />
+              return (
+                <article
+                  key={product.id}
+                  className="group relative overflow-hidden transition-transform"
+                  tabIndex={0}
+                  aria-label={product.name}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      (e.target as HTMLElement).querySelector("a")?.click();
+                      e.preventDefault();
+                    }
+                  }}
+                >
+                  {/* Stock badge */}
+                  <span
+                    className={`absolute top-2 left-2 text-xs px-3 py-1 rounded-full z-20 ${
+                      product.badge?.toLowerCase().includes("out")
+                        ? "bg-white/20 backdrop-blur text-[#891F1A] font-semibold"
+                        : "bg-[#891F1A]/70 backdrop-blur text-white"
+                    }`}
+                    aria-label={`Stock status: ${product.badge}`}
+                  >
+                    {product.badge}
+                  </span>
 
-              {/* Image wrapper: keeps layout fixed; image zooms inside */}
-              <div className="relative w-full aspect-square overflow-hidden rounded-xl">
-                <SafeImg
-                  src={product.image}
-                  alt={product.name}
-                  loading="lazy"
-                  className="h-full w-full object-cover transition-transform duration-500 ease-out will-change-transform group-hover:scale-105"
-                  onError={(e) => {
-                    e.currentTarget.onerror = null;
-                    e.currentTarget.src = "/images/img1.png";
-          
-                  }} 
-                  overlay={false}
-                  onClick={() =>
-                    router.push(
-                      `/home/${encodeURIComponent(category!)}/${encodeURIComponent(subcategory!)}/products/${product.id}`
-                    )
-                  }
-                />
-              </div>
+                  {/* Action buttons (top-right) */}
+                  <CardActionButtons
+                    isFavorite={favoriteIds.has(product.id)}
+                    isInCart={cartIds.has(product.id)}
+                    onToggleFavorite={handleToggleFavorite(product.id)}
+                    onAddToCart={handleCartToggle(product)}
+                  />
 
-              <h2 className="text-xl font-semibold text-gray-800 mt-5" onClick={() =>
-                    router.push(
-                      `/home/${encodeURIComponent(category!)}/${encodeURIComponent(subcategory!)}/products/${product.id}`
-                    )
-                  }>{product.name}</h2>
-             <StarRating rating={product.rating} count={product.rating_count} />
-            </div>
-          ))}
-        </div>
+                  {/* Image + link (improves SEO & prefetch) */}
+                  <Link href={detailHref} className="relative block w-full">
+                    <div className="relative w-full aspect-square overflow-hidden rounded-xl">
+                      <SafeImg
+                        src={product.image}
+                        alt={product.name}
+                        loading="lazy"
+                        className="h-full w-full object-cover transition-transform duration-500 ease-out will-change-transform group-hover:scale-105"
+                        onError={(e) => {
+                          e.currentTarget.onerror = null;
+                          e.currentTarget.src = "/images/img1.png";
+                        }}
+                        overlay={false}
+                      />
+                    </div>
+                  </Link>
+
+                  <h3 className="text-xl font-semibold text-gray-800 mt-5">
+                    <Link href={detailHref} className="hover:underline">
+                      {product.name}
+                    </Link>
+                  </h3>
+
+                  <StarRating rating={product.rating} count={product.rating_count} />
+                </article>
+              );
+            })}
+          </div>
+        </section>
 
         {/* Load more */}
         <div className="flex justify-center mt-10">
           {visibleCount < allProducts.length && (
             <button
               onClick={loadMoreProducts}
-              className="bg-[#7f1d1d] text-white px-6 py-3 rounded-full font-semibold hover:bg-red-700 transition"
+              className="bg-[#7f1d1d] text-white px-6 py-3 rounded-full font-semibold hover:bg-red-700 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+              aria-controls="products-heading"
+              aria-label="Load more products"
             >
               Load More Products
             </button>

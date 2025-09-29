@@ -10,16 +10,29 @@ import { FiSave } from "react-icons/fi";
 import { MdOutlineArticle } from "react-icons/md";
 import { API_BASE_URL } from "../../utils/api";
 
-// ⬇️ Keep CSS; remove Quill runtime imports from module scope
+// Keep CSS; load Quill at runtime inside component
 import "quill/dist/quill.snow.css";
 
 import Cropper from "cropperjs";
 import "cropperjs/dist/cropper.css";
 
-// Force dynamic to avoid prerender/CSR bailout during build
 export const dynamic = "force-dynamic";
 
-// --------- Utility helpers ----------
+/* -------------------- Small helpers -------------------- */
+const FRONTEND_KEY = (process.env.NEXT_PUBLIC_FRONTEND_KEY || "").trim();
+const withFrontendKey = (init: RequestInit = {}): RequestInit => {
+  const headers = new Headers(init.headers || {});
+  headers.set("X-Frontend-Key", FRONTEND_KEY);
+  return { ...init, headers };
+};
+const slugify = (s: string) =>
+  s
+    .toLowerCase()
+    .trim()
+    .replace(/['"]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)+/g, "");
+
 function insertImage(quill: any, dataUrl: string) {
   const range = quill.getSelection(true);
   const index = range ? range.index : quill.getLength();
@@ -29,32 +42,20 @@ function insertImage(quill: any, dataUrl: string) {
 function replaceImageNode(node: HTMLImageElement, dataUrl: string) {
   node.src = dataUrl;
 }
-
-const FRONTEND_KEY = (process.env.NEXT_PUBLIC_FRONTEND_KEY || "").trim();
-const withFrontendKey = (init: RequestInit = {}): RequestInit => {
-  const headers = new Headers(init.headers || {});
-  headers.set("X-Frontend-Key", FRONTEND_KEY);
-  return { ...init, headers };
-};
-
-// Helpers for datetime-local
 function isoToLocalInput(iso?: string | null) {
   if (!iso) return "";
   try {
     const d = new Date(iso);
     const pad = (n: number) => String(n).padStart(2, "0");
-    const yyyy = d.getFullYear();
-    const mm = pad(d.getMonth() + 1);
-    const dd = pad(d.getDate());
-    const hh = pad(d.getHours());
-    const mi = pad(d.getMinutes());
-    return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(
+      d.getHours()
+    )}:${pad(d.getMinutes())}`;
   } catch {
     return "";
   }
 }
 
-// ===== Simple modal to host CropperJS =====
+/* -------------------- Crop modal -------------------- */
 function CropModal({
   src,
   onClose,
@@ -96,19 +97,14 @@ function CropModal({
       <div className="bg-white rounded-xl shadow-xl w-[90vw] max-w-3xl p-4">
         <div className="mb-3 text-lg font-semibold">Crop Image</div>
         <div className="w-full h-[60vh]">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img ref={imgRef} src={src} alt="Crop" className="max-w-full" />
         </div>
         <div className="mt-4 flex justify-end gap-2">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 bg-gray-200 rounded-lg"
-          >
+          <button onClick={onClose} className="px-4 py-2 bg-gray-200 rounded-lg">
             Cancel
           </button>
-          <button
-            onClick={handleConfirm}
-            className="px-4 py-2 bg-[#891F1A] text-white rounded-lg"
-          >
+          <button onClick={handleConfirm} className="px-4 py-2 bg-[#891F1A] text-white rounded-lg">
             Apply Crop
           </button>
         </div>
@@ -117,17 +113,15 @@ function CropModal({
   );
 }
 
-// ===== Custom Quill component with resize, wrap, crop =====
+/* -------------------- Quill editor -------------------- */
 function QuillEditor({
   value,
   onChange,
-  modules,
   placeholder,
   onReady,
 }: {
   value: string;
   onChange: (html: string) => void;
-  modules: any;
   placeholder?: string;
   onReady?: (quill: any) => void;
 }) {
@@ -138,14 +132,11 @@ function QuillEditor({
   const [cropTarget, setCropTarget] = useState<HTMLImageElement | null>(null);
   const [cropSrc, setCropSrc] = useState<string>("");
 
-  // Toolbar float handlers (wrap text like Word)
   const setFloat = (side: "left" | "right" | "none") => {
     const quill = quillRef.current;
     if (!quill) return;
     const range = quill.getSelection(true);
     if (!range) return;
-
-    // Find an image blot around cursor
     const [leaf] = quill.getLeaf(range.index) as any;
     if (!leaf || !leaf.domNode || leaf.domNode.tagName !== "IMG") return;
     const img: HTMLImageElement = leaf.domNode;
@@ -225,14 +216,10 @@ function QuillEditor({
     `;
     host.appendChild(bar);
 
-    (bar.querySelector(".ql-wrap-left") as HTMLButtonElement).onclick = () =>
-      setFloat("left");
-    (bar.querySelector(".ql-wrap-right") as HTMLButtonElement).onclick = () =>
-      setFloat("right");
-    (bar.querySelector(".ql-wrap-none") as HTMLButtonElement).onclick = () =>
-      setFloat("none");
-    (bar.querySelector(".ql-image") as HTMLButtonElement).onclick =
-      pickImageAndInsert;
+    (bar.querySelector(".ql-wrap-left") as HTMLButtonElement).onclick = () => setFloat("left");
+    (bar.querySelector(".ql-wrap-right") as HTMLButtonElement).onclick = () => setFloat("right");
+    (bar.querySelector(".ql-wrap-none") as HTMLButtonElement).onclick = () => setFloat("none");
+    (bar.querySelector(".ql-image") as HTMLButtonElement).onclick = pickImageAndInsert;
 
     return bar;
   }
@@ -262,7 +249,7 @@ function QuillEditor({
 
       if (cancelled) return;
 
-      const config = {
+      const quill = new Quill(editor, {
         theme: "snow",
         modules: {
           blotFormatter: {},
@@ -271,29 +258,14 @@ function QuillEditor({
           history: { delay: 500, maxStack: 200, userOnly: true },
           keyboard: {
             bindings: {
-              undo: {
-                key: "z",
-                shortKey: true,
-                handler(this: any) {
-                  this.quill.history.undo();
-                  return false;
-                },
-              },
-              redo: {
-                key: "y",
-                shortKey: true,
-                handler(this: any) {
-                  this.quill.history.redo();
-                  return false;
-                },
-              },
+              undo: { key: "z", shortKey: true, handler(this: any) { this.quill.history.undo(); return false; } },
+              redo: { key: "y", shortKey: true, handler(this: any) { this.quill.history.redo(); return false; } },
             },
           },
         },
         placeholder: placeholder || "Write your masterpiece…",
-      } as any;
+      } as any);
 
-      const quill = new Quill(editor, config) as any;
       quillRef.current = quill;
 
       quill.clipboard.dangerouslyPasteHTML(value || "");
@@ -357,25 +329,21 @@ function QuillEditor({
 
       onReady?.(quill);
 
-      const cleanup = () => {
+      (quill as any).__cleanup = () => {
         quill.root.removeEventListener("paste", onPaste);
         quill.root.removeEventListener("drop", onDrop);
         quill.root.removeEventListener("dblclick", onDblClick);
       };
-
-      (quill as any).__cleanup = cleanup;
     })();
 
     return () => {
-      let cancelled = true;
       cancelled = true;
       const q: any = quillRef.current;
-      if (q && q.__cleanup) q.__cleanup();
+      if (q?.__cleanup) q.__cleanup();
       if (containerRef.current) containerRef.current.innerHTML = "";
       quillRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [containerRef.current]);
+  }, [placeholder, value, onChange]);
 
   useEffect(() => {
     const quill = quillRef.current;
@@ -439,7 +407,7 @@ function QuillEditor({
   );
 }
 
-// =================== PAGE ===================
+/* -------------------- Page -------------------- */
 interface FormState {
   id: string;
   title: string;
@@ -453,21 +421,20 @@ interface FormState {
   ogTitle: string;
   ogImage: string;
   schemaEnabled: boolean;
-  publishDate: string; // from <input type="datetime-local">
+  publishDate: string; // datetime-local (local)
   draft: boolean;
 }
 
 function BlogManagementPage() {
   const router = useRouter();
   const params = useSearchParams();
-  const editId = params.get("editId"); // ⬅️ if present, we're editing
+  const editId = params.get("editId");
 
   const [form, setForm] = useState<FormState>({
     id: "",
     title: "",
     slug: "",
     content: "",
-    // category removed
     tags: "",
     author: "",
     featuredImage: "",
@@ -477,23 +444,19 @@ function BlogManagementPage() {
     ogImage: "",
     schemaEnabled: false,
     publishDate: "",
-    draft: false, // default to NON-draft
+    draft: false,
   });
 
   const [imagePreview, setImagePreview] = useState("");
-  const [formTouched, setFormTouched] = useState(false);
   const [loadingEdit, setLoadingEdit] = useState<boolean>(!!editId);
 
-  // Prefill if editId is present
   useEffect(() => {
     let cancelled = false;
 
     const hydrateForEdit = async (id: string) => {
       try {
         const res = await fetch(
-          `${API_BASE_URL}/api/show-specific-blog?blog_id=${encodeURIComponent(
-            id
-          )}&all=true`,
+          `${API_BASE_URL}/api/show-specific-blog?blog_id=${encodeURIComponent(id)}&all=true`,
           withFrontendKey()
         );
         if (!res.ok) throw new Error("Failed to load blog");
@@ -512,9 +475,7 @@ function BlogManagementPage() {
           ogTitle: blog.ogTitle || "",
           ogImage: blog.ogImage || "",
           schemaEnabled: Boolean(blog.schemaEnabled),
-          publishDate: blog.publishDate
-            ? isoToLocalInput(blog.publishDate)
-            : "",
+          publishDate: blog.publishDate ? isoToLocalInput(blog.publishDate) : "",
           draft: Boolean(blog.draft),
         };
 
@@ -545,7 +506,6 @@ function BlogManagementPage() {
 
   const handleChange = (e: any) => {
     const { name, value, type, checked, files } = e.target;
-    setFormTouched(true);
 
     if (type === "file") {
       const file = files?.[0];
@@ -566,13 +526,32 @@ function BlogManagementPage() {
     }
   };
 
-  // —— core submit: creates or updates based on presence of form.id
+  // Validate minimal fields
+  const validate = (payload: Partial<FormState>) => {
+    const title = (payload.title ?? form.title).trim();
+    const content = (payload.content ?? form.content).trim();
+    if (!title) {
+      toast.error("Title is required.");
+      return false;
+    }
+    if (!content) {
+      toast.error("Content is required.");
+      return false;
+    }
+    return true;
+  };
+
   const handleSubmit = async (overrides: Partial<FormState> = {}) => {
     try {
-      const rawPublish: any =
-        overrides.publishDate !== undefined
-          ? overrides.publishDate
-          : form.publishDate;
+      if (!validate(overrides)) return;
+
+      // ensure slug
+      const effectiveTitle = (overrides.title ?? form.title).trim();
+      const rawSlug = (overrides.slug ?? form.slug).trim();
+      const ensuredSlug = rawSlug || slugify(effectiveTitle);
+
+      const rawPublish =
+        overrides.publishDate !== undefined ? overrides.publishDate : form.publishDate;
 
       const normalizedPublish =
         rawPublish && String(rawPublish).trim()
@@ -580,16 +559,16 @@ function BlogManagementPage() {
           : null;
 
       const now = new Date();
-      const isScheduled = normalizedPublish
-        ? new Date(normalizedPublish) > now
-        : false;
+      const isScheduled = normalizedPublish ? new Date(normalizedPublish) > now : false;
       const status = isScheduled ? "scheduled" : "published";
 
-      const draftFlag = overrides.draft !== undefined ? overrides.draft : false;
+      const draftFlag =
+        overrides.draft !== undefined ? overrides.draft : (editId ? form.draft : false);
 
       const payloadBase: any = {
-        title: overrides.title ?? form.title,
-        slug: overrides.slug ?? form.slug,
+        id: overrides.id ?? form.id ?? "",
+        title: effectiveTitle,
+        slug: ensuredSlug,
         content: overrides.content ?? form.content,
         tags: overrides.tags ?? form.tags,
         author: overrides.author ?? form.author,
@@ -600,10 +579,11 @@ function BlogManagementPage() {
         ogImage: overrides.ogImage ?? form.ogImage,
         schemaEnabled: overrides.schemaEnabled ?? form.schemaEnabled,
         publishDate: normalizedPublish,
-        draft: draftFlag,
+        draft: !!draftFlag,
         status,
       };
 
+      // backend expects snake_case mirrors
       const payload: any = {
         ...payloadBase,
         featured_image: payloadBase.featuredImage,
@@ -613,19 +593,14 @@ function BlogManagementPage() {
         og_image: payloadBase.ogImage,
       };
 
-      const isEdit = Boolean(
-        (overrides.id ?? form.id)?.toString?.() || (overrides.id ?? form.id)
-      );
+      const isEdit = Boolean((payloadBase.id || editId)?.toString());
       let endpoint = `${API_BASE_URL}/api/save-blog/`;
       let method: "POST" | "PUT" = "POST";
 
       if (isEdit) {
-        const id = (overrides.id ?? form.id) as string;
-        endpoint = `${API_BASE_URL}/api/edit-blog/${id}/`;
+        const id = (payloadBase.id || editId) as string;
+        endpoint = `${API_BASE_URL}/api/edit-blog/${encodeURIComponent(id)}/`;
         method = "PUT";
-      } else {
-        payload.id = overrides.id ?? form.id ?? "";
-        payload.blog_id = overrides.id ?? form.id ?? "";
       }
 
       const res = await fetch(
@@ -637,10 +612,17 @@ function BlogManagementPage() {
         })
       );
 
-      if (!res.ok) throw new Error("Save failed");
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(text || "Save failed");
+      }
 
       if (isEdit) {
         toast.success("✅ Blog updated");
+        // Drop ?editId=… from URL after update
+        const url = new URL(window.location.href);
+        url.searchParams.delete("editId");
+        router.replace(url.pathname);
       } else {
         toast.success(
           status === "scheduled"
@@ -649,17 +631,28 @@ function BlogManagementPage() {
               }`
             : "✅ Blog post published!"
         );
+        // Reset form after successful create
+        setForm((f) => ({
+          ...f,
+          id: "",
+          title: "",
+          slug: "",
+          content: "",
+          tags: "",
+          author: "",
+          featuredImage: "",
+          metaTitle: "",
+          metaDescription: "",
+          ogTitle: "",
+          ogImage: "",
+          schemaEnabled: false,
+          publishDate: "",
+          draft: false,
+        }));
+        setImagePreview("");
       }
-
-      setFormTouched(false);
-
-      if (isEdit) {
-        const url = new URL(window.location.href);
-        url.searchParams.delete("editId");
-        router.replace(url.pathname);
-      }
-    } catch {
-      toast.error("❌ Failed to save blog. Please try again.");
+    } catch (e: any) {
+      toast.error(`❌ Failed to save blog. ${e?.message || ""}`);
     }
   };
 
@@ -667,13 +660,8 @@ function BlogManagementPage() {
     if (!form.publishDate || new Date(form.publishDate) <= new Date()) {
       return toast.error("❌ Enter a valid future date.");
     }
-    toast.success(
-      `⏳ Scheduled for ${new Date(form.publishDate).toLocaleString()}`
-    );
-    await handleSubmit({ draft: false });
+    await handleSubmit({ draft: false }); // scheduled, not draft
   };
-
-  const quillModules = useMemo(() => ({}), []);
 
   return (
     <AdminAuthGuard>
@@ -681,6 +669,7 @@ function BlogManagementPage() {
         <AdminSidebar />
         <div className="flex-1 px-4 sm:px-6 lg:px-8 xl:px-12 py-6 sm:py-8 lg:py-10 bg-gray-50 min-h-screen">
           <div className="max-w-5xl mx-auto">
+            {/* Header */}
             <div className="mb-6 sm:mb-8 bg-white p-4 sm:p-6 rounded-2xl shadow border flex flex-col md:flex-row md:items-center justify-between gap-4">
               <h1 className="text-3xl font-bold text-[#891F1A] flex items-center gap-2">
                 <MdOutlineArticle className="text-4xl" />
@@ -688,11 +677,11 @@ function BlogManagementPage() {
               </h1>
               <div className="flex gap-2">
                 <button
-                  onClick={() => handleSubmit({ draft: false, id: form.id })}
+                  onClick={() => handleSubmit({ draft: false, id: form.id || (editId as any) })}
                   className="flex items-center gap-2 bg-[#891F1A] hover:bg-[#6d1915] text-white px-5 py-2.5 rounded-xl text-sm shadow"
                   disabled={loadingEdit}
                 >
-                  <FiSave className="text-lg" />{" "}
+                  <FiSave className="text-lg" />
                   {editId ? "Save Changes" : "Save Blog Post"}
                 </button>
                 {!editId && (
@@ -706,17 +695,13 @@ function BlogManagementPage() {
               </div>
             </div>
 
+            {/* Body */}
             <div className="bg-white text-black rounded-2xl shadow-xl border p-6 space-y-6">
-              <InputField
-                label="Title"
-                name="title"
-                value={form.title}
-                onChange={handleChange}
-              />
+              <InputField label="Title" name="title" value={form.title} onChange={handleChange} />
 
               {!editId && (
                 <InputField
-                  label="Slug"
+                  label="Slug (optional – auto from Title)"
                   name="slug"
                   value={form.slug}
                   onChange={handleChange}
@@ -724,69 +709,31 @@ function BlogManagementPage() {
               )}
 
               <div>
-                <label className="text-sm font-medium text-gray-700 block mb-2">
-                  Content
-                </label>
+                <label className="text-sm font-medium text-gray-700 block mb-2">Content</label>
                 <QuillEditor
                   value={form.content}
-                  onChange={(content) =>
-                    setForm((prev) => ({ ...prev, content }))
-                  }
-                  modules={quillModules}
-                  placeholder={
-                    loadingEdit ? "Loading..." : "Write your masterpiece…"
-                  }
+                  onChange={(content) => setForm((prev) => ({ ...prev, content }))}
+                  placeholder={loadingEdit ? "Loading..." : "Write your masterpiece…"}
                 />
               </div>
 
               <div className="grid md:grid-cols-3 gap-4">
-                <InputField
-                  label="Tags"
-                  name="tags"
-                  value={form.tags}
-                  onChange={handleChange}
-                />
-                <InputField
-                  label="Author"
-                  name="author"
-                  value={form.author}
-                  onChange={handleChange}
-                />
+                <InputField label="Tags" name="tags" value={form.tags} onChange={handleChange} />
+                <InputField label="Author" name="author" value={form.author} onChange={handleChange} />
                 <div />
               </div>
 
-              <InputField
-                label="Meta Title"
-                name="metaTitle"
-                value={form.metaTitle}
-                onChange={handleChange}
-              />
-              <TextareaField
-                label="Meta Description"
-                name="metaDescription"
-                value={form.metaDescription}
-                onChange={handleChange}
-              />
+              <InputField label="Meta Title" name="metaTitle" value={form.metaTitle} onChange={handleChange} />
+              <TextareaField label="Meta Description" name="metaDescription" value={form.metaDescription} onChange={handleChange} />
 
-              <InputField
-                label="OG Title"
-                name="ogTitle"
-                value={form.ogTitle}
-                onChange={handleChange}
-              />
-              <InputField
-                label="OG Image URL"
-                name="ogImage"
-                value={form.ogImage}
-                onChange={handleChange}
-              />
+              <InputField label="OG Title" name="ogTitle" value={form.ogTitle} onChange={handleChange} />
+              <InputField label="OG Image URL" name="ogImage" value={form.ogImage} onChange={handleChange} />
 
               <div>
-                <label className="text-sm font-medium text-gray-700 block mb-1">
-                  Featured Image
-                </label>
+                <label className="text-sm font-medium text-gray-700 block mb-1">Featured Image</label>
                 <input type="file" accept="image/*" onChange={handleChange} />
                 {(imagePreview || form.featuredImage) && (
+                  // eslint-disable-next-line @next/next/no-img-element
                   <img
                     src={imagePreview || form.featuredImage}
                     alt="Preview"
@@ -804,7 +751,7 @@ function BlogManagementPage() {
                 />
 
                 <button
-                  onClick={() => handleSubmit({ draft: true, id: form.id })}
+                  onClick={() => handleSubmit({ draft: true, id: form.id || (editId as any) })}
                   className="bg-gray-600 hover:bg-gray-700 text-white px-5 py-2.5 rounded-xl text-sm shadow"
                   disabled={loadingEdit}
                 >
@@ -812,9 +759,7 @@ function BlogManagementPage() {
                 </button>
 
                 <div>
-                  <label className="text-sm font-medium text-gray-700">
-                    Publish Date
-                  </label>
+                  <label className="text-sm font-medium text-gray-700">Publish Date</label>
                   <input
                     type="datetime-local"
                     name="publishDate"
@@ -827,12 +772,12 @@ function BlogManagementPage() {
             </div>
           </div>
         </div>
-      </div>
+      </div>  
     </AdminAuthGuard>
   );
 }
 
-// Suspense + Toast container wrapper (fixes useSearchParams CSR bailout)
+/* Suspense + toasts wrapper */
 export default function BlogManagementPageWrapper() {
   return (
     <>
@@ -844,17 +789,12 @@ export default function BlogManagementPageWrapper() {
   );
 }
 
+/* -------------------- Small field components -------------------- */
 function InputField({ label, name, value, onChange }: any) {
   return (
     <div>
       <label className="text-sm font-medium text-gray-700">{label}</label>
-      <input
-        type="text"
-        name={name}
-        value={value}
-        onChange={onChange}
-        className="w-full px-4 py-2 bg-gray-50 border rounded"
-      />
+      <input type="text" name={name} value={value} onChange={onChange} className="w-full px-4 py-2 bg-gray-50 border rounded" />
     </div>
   );
 }
@@ -862,13 +802,7 @@ function TextareaField({ label, name, value, onChange }: any) {
   return (
     <div>
       <label className="text-sm font-medium text-gray-700">{label}</label>
-      <textarea
-        name={name}
-        value={value}
-        onChange={onChange}
-        className="w-full px-4 py-2 bg-gray-50 border rounded"
-        rows={3}
-      />
+      <textarea name={name} value={value} onChange={onChange} className="w-full px-4 py-2 bg-gray-50 border rounded" rows={3} />
     </div>
   );
 }
@@ -876,23 +810,13 @@ function CheckboxField({ label, name, checked, onChange }: any) {
   return (
     <div className="flex items-center gap-2">
       <label className="text-sm font-medium text-gray-700">{label}</label>
-      <input
-        type="checkbox"
-        name={name}
-        checked={checked}
-        onChange={onChange}
-        className="ml-2"
-      />
+      <input type="checkbox" name={name} checked={checked} onChange={onChange} className="ml-2" />
     </div>
   );
 }
 
-// === Utilities ===
-async function compressBase64Image(
-  base64: string,
-  maxWidth = 1400,
-  quality = 0.9
-): Promise<string> {
+/* -------------------- Image utilities -------------------- */
+async function compressBase64Image(base64: string, maxWidth = 1400, quality = 0.9): Promise<string> {
   return new Promise((resolve) => {
     const img = new Image();
     img.crossOrigin = "anonymous";

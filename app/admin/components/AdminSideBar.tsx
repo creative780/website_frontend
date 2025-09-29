@@ -2,10 +2,19 @@
 
 import { useRouter, usePathname } from "next/navigation";
 import Image from "next/image";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useId,
+  useTransition,
+} from "react";
 import { API_BASE_URL } from "../../utils/api";
 
-// ================= Types =================
+/* ================= Types ================= */
 export type LinkItem = {
   label: string;
   href?: string;
@@ -35,7 +44,7 @@ type AdminRow = {
   created_at: string;
 };
 
-// ================= Constants =================
+/* ================= Constants ================= */
 const GROUP_LABEL = "Home Settings";
 
 // Map backend → allowed page label
@@ -95,18 +104,19 @@ const ALL_LINKS: LinkItem[] = [
   { label: "User View", href: "/home" },
 ];
 
-// ===== Logo helpers (top-level, not hooks) =====
+/* ===== Logo helpers (top-level, not hooks) ===== */
 const LOCAL_LOGO_FALLBACK = "/images/logo.png";
 const normalizeLogoUrl = (u?: string) => {
   const v = (u || "").trim();
   if (!v) return LOCAL_LOGO_FALLBACK;
   if (v.startsWith("http://") || v.startsWith("https://")) return v;
   if (v.startsWith("/")) return `${API_BASE_URL}${v}`;
-  if (v.startsWith("media/") || v.startsWith("uploads/")) return `${API_BASE_URL}/${v}`;
+  if (v.startsWith("media/") || v.startsWith("uploads/"))
+    return `${API_BASE_URL}/${v}`;
   return LOCAL_LOGO_FALLBACK;
 };
 
-// ================= Utils =================
+/* ================= Utils ================= */
 function safeParseAccessPages(raw: string | null): string[] {
   if (!raw) return [];
   try {
@@ -131,10 +141,26 @@ function sameSetCI(a: string[], b: string[]) {
   return true;
 }
 
-// ================= Component =================
+const usePageVisibility = () => {
+  const [visible, setVisible] = useState(
+    typeof document !== "undefined"
+      ? document.visibilityState === "visible"
+      : true
+  );
+  useEffect(() => {
+    const onVisible = () => setVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
+  return visible;
+};
+
+/* ================= Component ================= */
 export default function AdminSidebar() {
   const router = useRouter();
   const pathname = usePathname();
+  const [isPending, startTransition] = useTransition();
+  const idPrefix = useId();
 
   const [loading, setLoading] = useState(true);
   const [isAuthed, setIsAuthed] = useState<boolean>(false);
@@ -145,17 +171,18 @@ export default function AdminSidebar() {
 
   const validatingRef = useRef(false);
   const notifyAbortRef = useRef<AbortController | null>(null);
+  const visible = usePageVisibility();
 
-  const forceLogout = () => {
+  const forceLogout = useCallback(() => {
     try {
       localStorage.removeItem("admin-auth");
       localStorage.removeItem("admin-id");
       localStorage.removeItem("access-pages");
     } catch {}
     router.replace("/admin/login");
-  };
+  }, [router]);
 
-  const validateSession = async () => {
+  const validateSession = useCallback(async () => {
     if (validatingRef.current) return;
     validatingRef.current = true;
     try {
@@ -163,14 +190,19 @@ export default function AdminSidebar() {
         typeof window !== "undefined" &&
         localStorage.getItem("admin-auth") === "true";
       const adminId =
-        typeof window !== "undefined" ? localStorage.getItem("admin-id") || "" : "";
+        typeof window !== "undefined"
+          ? localStorage.getItem("admin-id") || ""
+          : "";
 
       if (!isLoggedIn || !adminId) {
         validatingRef.current = false;
         return forceLogout();
       }
 
-      const res = await fetch(`${API_BASE_URL}/api/show-admin/`, withFrontendKey());
+      const res = await fetch(
+        `${API_BASE_URL}/api/show-admin/`,
+        withFrontendKey()
+      );
       if (!res.ok) {
         validatingRef.current = false;
         return;
@@ -184,7 +216,9 @@ export default function AdminSidebar() {
         return forceLogout();
       }
 
-      const localPerms = safeParseAccessPages(localStorage.getItem("access-pages"));
+      const localPerms = safeParseAccessPages(
+        localStorage.getItem("access-pages")
+      );
       const serverPerms = normalizePermissions(me.access_pages || []);
       if (!sameSetCI(normalizePermissions(localPerms), serverPerms)) {
         validatingRef.current = false;
@@ -195,7 +229,7 @@ export default function AdminSidebar() {
     } finally {
       validatingRef.current = false;
     }
-  };
+  }, [forceLogout]);
 
   // Load auth + first validation
   useEffect(() => {
@@ -231,15 +265,14 @@ export default function AdminSidebar() {
     };
     window.addEventListener("storage", onStorage);
     return () => window.removeEventListener("storage", onStorage);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router]);
+  }, [router, validateSession]);
 
-  // Periodic revalidation
+  // Periodic revalidation (reduced churn: only when tab visible)
   useEffect(() => {
-    const t = setInterval(validateSession, 60000);
+    if (!visible) return;
+    const t = setInterval(validateSession, 60_000);
     return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [visible, validateSession]);
 
   // Access set
   const accessSet = useMemo(
@@ -277,7 +310,7 @@ export default function AdminSidebar() {
     }, []);
   }, [accessPages, accessSet]);
 
-  // Notifications fetch
+  // Notifications fetch (debounced + visibility-aware)
   const fetchNotifications = useCallback(async () => {
     if (!canSeeNotifications) {
       setUnreadCount(0);
@@ -290,7 +323,7 @@ export default function AdminSidebar() {
     try {
       const res = await fetch(
         `${API_BASE_URL}/api/notifications/`,
-        withFrontendKey({ signal: ac.signal })
+        withFrontendKey({ signal: ac.signal, cache: "no-store" })
       );
       if (!res.ok) return;
       const data: Notification[] = await res.json();
@@ -313,27 +346,29 @@ export default function AdminSidebar() {
     }
   }, [canSeeNotifications, accessSet]);
 
-  // Notifications polling + visibility refresh
+  // Notifications polling: only when visible; backoff when hidden
   useEffect(() => {
+    if (!visible) return;
     fetchNotifications();
-    const poll = setInterval(fetchNotifications, 30000);
-    const onVisible = () => {
-      if (document.visibilityState === "visible") fetchNotifications();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-
+    const poll = setInterval(fetchNotifications, 30_000);
     return () => {
       clearInterval(poll);
-      document.removeEventListener("visibilitychange", onVisible);
       if (notifyAbortRef.current) notifyAbortRef.current.abort();
     };
-  }, [fetchNotifications]);
+  }, [visible, fetchNotifications]);
 
-  // ===== Fetch logo (runs once) =====
+  // ===== Fetch logo with sessionStorage cache (cuts a network hop per mount) =====
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
+        const cacheKey = "admin-logo-url:v1";
+        const cached = sessionStorage.getItem(cacheKey);
+        if (cached) {
+          const { url } = JSON.parse(cached);
+          if (!cancelled) setLogoUrl(normalizeLogoUrl(url));
+          return;
+        }
         const res = await fetch(
           `${API_BASE_URL}/api/show-logo/?_=${Date.now()}`,
           withFrontendKey({ cache: "no-store" })
@@ -341,6 +376,9 @@ export default function AdminSidebar() {
         const json = res.ok ? await res.json() : null;
         const url = normalizeLogoUrl(json?.logo?.url);
         if (!cancelled) setLogoUrl(url);
+        try {
+          sessionStorage.setItem(cacheKey, JSON.stringify({ url: json?.logo?.url || "" }));
+        } catch {}
       } catch {
         if (!cancelled) setLogoUrl(LOCAL_LOGO_FALLBACK);
       }
@@ -350,21 +388,43 @@ export default function AdminSidebar() {
     };
   }, []);
 
+  const isChildActive = useCallback(
+    (href: string) =>
+      pathname === href ||
+      (pathname?.startsWith(href + "/") && href !== "/admin/dashboard"),
+    [pathname]
+  );
+
+  const toggleGroup = useCallback(
+    (label: string) =>
+      setOpenGroups((prev) => ({ ...prev, [label]: !prev[label] })),
+    []
+  );
+
+  const onNav = useCallback(
+    (href: string) => {
+      startTransition(() => {
+        router.push(href);
+      });
+    },
+    [router, startTransition]
+  );
+
   if (loading || !isAuthed) {
     return (
-      <aside className="w-full lg:w-64 h-screen sticky top-0 bg-white border-r shadow-sm animate-pulse" />
+      <aside
+        className="w-full lg:w-64 h-screen sticky top-0 bg-white border-r shadow-sm animate-pulse"
+        aria-label="Admin sidebar loading"
+      />
     );
-  }
-
-  const toggleGroup = (label: string) =>
-    setOpenGroups((prev) => ({ ...prev, [label]: !prev[label] }));
-
-  const isChildActive = (href: string) =>
-    pathname === href ||
-    (pathname?.startsWith(href + "/") && href !== "/admin/dashboard");
+    }
 
   return (
-    <aside className="w-full lg:w-64 bg-white border-r shadow-sm h-screen sticky top-0 overflow-y-auto z-40">
+    <aside
+      className="w-full lg:w-64 bg-white border-r shadow-sm h-screen sticky top-0 overflow-y-auto z-40"
+      role="navigation"
+      aria-label="Admin sidebar"
+    >
       {/* Logo */}
       <div className="flex justify-center items-center py-6 border-b mb-4 px-4">
         <Image
@@ -386,16 +446,16 @@ export default function AdminSidebar() {
         {canSeeNotifications && (
           <button
             type="button"
-            onClick={() => router.push("/admin/notifications")}
+            onClick={() => onNav("/admin/notifications")}
             title="Notifications"
             className="ml-2 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-100 hover:bg-red-200 transition-colors"
-            aria-label="Notifications"
+            aria-label={`Notifications, ${unreadCount} unread`}
           >
-            <span className="text-sm font-semibold text-red-900">
+            <span className="text-sm font-semibold text-red-900" aria-hidden="true">
               <img
                 src="https://img.icons8.com/?size=100&id=83193&format=png&color=891F1A"
                 className="w-5 h-5"
-                alt="bell"
+                alt=""
               />
             </span>
             <span
@@ -419,23 +479,26 @@ export default function AdminSidebar() {
             const isActive = isChildActive(item.href!);
             return (
               <li key={item.href}>
-                <button
-                  type="button"
-                  onClick={() => router.push(item.href!)}
+                {/* Prefer Link for prefetch + native semantics */}
+                <Link
+                  href={item.href!}
+                  prefetch
                   className={[
-                    "w-full text-left py-3 px-4 border-b rounded transition-colors duration-200",
+                    "block py-3 px-4 border-b rounded transition-colors duration-200",
                     isActive
                       ? "bg-[#891F1A] text-white hover:bg-[#a14d4d]"
                       : "hover:bg-gray-100 text-black",
                   ].join(" ")}
+                  aria-current={isActive ? "page" : undefined}
                 >
                   {item.label}
-                </button>
+                </Link>
               </li>
             );
           }
 
           const isOpen = !!openGroups[item.label];
+          const groupId = `${idPrefix}-group-${item.label.replace(/\s+/g, "-")}`;
           const anyChildActive = item.children!.some((c) =>
             isChildActive(c.href)
           );
@@ -452,7 +515,7 @@ export default function AdminSidebar() {
                     : "hover:bg-gray-100 text-black",
                 ].join(" ")}
                 aria-expanded={isOpen}
-                aria-controls={`group-${item.label}`}
+                aria-controls={groupId}
               >
                 <span>{item.label}</span>
                 <svg
@@ -462,6 +525,7 @@ export default function AdminSidebar() {
                   className={`w-5 h-5 transition-transform ${
                     isOpen ? "rotate-180" : ""
                   }`}
+                  aria-hidden="true"
                 >
                   <path
                     fillRule="evenodd"
@@ -471,29 +535,33 @@ export default function AdminSidebar() {
                 </svg>
               </button>
 
-              {isOpen && (
-                <ul
-                  id={`group-${item.label}`}
-                  className="mt-1 mb-3 ml-2 pl-2 border-l"
-                >
-                  {item.children!.map((child) => (
+              <ul
+                id={groupId}
+                className={`mt-1 mb-3 ml-2 pl-2 border-l ${
+                  isOpen ? "block" : "hidden"
+                }`}
+              >
+                {item.children!.map((child) => {
+                  const active = isChildActive(child.href);
+                  return (
                     <li key={child.href}>
-                      <button
-                        type="button"
-                        onClick={() => router.push(child.href)}
+                      <Link
+                        href={child.href}
+                        prefetch
                         className={[
-                          "w-full text-left py-2.5 px-3 rounded-md mb-1 transition-colors duration-200 text-sm",
-                          isChildActive(child.href)
+                          "block py-2.5 px-3 rounded-md mb-1 transition-colors duration-200 text-sm",
+                          active
                             ? "bg-[#891F1A] text-white hover:bg-[#a14d4d]"
                             : "hover:bg-gray-100 text-black",
                         ].join(" ")}
+                        aria-current={active ? "page" : undefined}
                       >
                         {child.label}
-                      </button>
+                      </Link>
                     </li>
-                  ))}
-                </ul>
-              )}
+                  );
+                })}
+              </ul>
             </li>
           );
         })}
@@ -506,7 +574,7 @@ export default function AdminSidebar() {
       </ul>
 
       {/* Logout */}
-      <div className="px-4 mt-12">
+      <div className="px-4 mt-12 mb-4">
         <button
           className="w-full bg-[#891F1A] text-white px-4 py-2 rounded hover:bg-red-700 text-sm sm:text-base"
           onClick={forceLogout}

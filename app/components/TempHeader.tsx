@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState, useCallback, useId } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import LoginModal from "./LoginModal";
@@ -11,7 +11,7 @@ const FRONTEND_KEY = (process.env.NEXT_PUBLIC_FRONTEND_KEY || "").trim();
 const withFrontendKey = (init: RequestInit = {}): RequestInit => {
   const headers = new Headers(init.headers || {});
   if (FRONTEND_KEY) headers.set("X-Frontend-Key", FRONTEND_KEY);
-  return { ...init, headers };
+  return { ...init, headers, cache: "no-store", credentials: "omit", mode: "cors" };
 };
 
 /* ---------- Logo helpers ---------- */
@@ -54,16 +54,18 @@ export default function TempHeader({
   const emailRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);
 
-  const triggerModal = (m: "signin" | "signup" = "signin") => {
+  const triggerModal = useCallback((m: "signin" | "signup" = "signin") => {
     setMode(m);
     setIsModalVisible(true);
     try {
       openModal(m);
-    } catch {}
-  };
+    } catch {
+      /* ignore */
+    }
+  }, [openModal]);
 
-  const closeModal = () => setIsModalVisible(false);
-  const toggleMode = () => setMode((p) => (p === "signin" ? "signup" : "signin"));
+  const closeModal = useCallback(() => setIsModalVisible(false), []);
+  const toggleMode = useCallback(() => setMode((p) => (p === "signin" ? "signup" : "signin")), []);
 
   // ===== User menu behavior =====
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -71,19 +73,19 @@ export default function TempHeader({
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
-    function onDocClick(e: MouseEvent) {
+    const onDocClick = (e: MouseEvent) => {
       if (!userMenuRef.current) return;
       const target = e.target as Node;
       if (!userMenuRef.current.contains(target)) setUserMenuOpen(false);
-    }
-    if (userMenuOpen) document.addEventListener("mousedown", onDocClick);
+    };
+    if (userMenuOpen) document.addEventListener("mousedown", onDocClick, { passive: true });
     return () => document.removeEventListener("mousedown", onDocClick);
   }, [userMenuOpen]);
 
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
+    const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setUserMenuOpen(false);
-    }
+    };
     if (userMenuOpen) document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [userMenuOpen]);
@@ -106,18 +108,22 @@ export default function TempHeader({
     closeMenu();
     try {
       await Promise.resolve(handleLogout());
-    } catch {}
+    } catch {
+      /* ignore */
+    }
   };
 
   /* -------- Fetch logo from backend (ShowLogo API) -------- */
   const [logoUrl, setLogoUrl] = useState<string>(LOCAL_LOGO_FALLBACK);
   useEffect(() => {
     let cancelled = false;
+    const ac = new AbortController();
+
     (async () => {
       try {
         const res = await fetch(
           `${API_BASE_URL}/api/show-logo/?_=${Date.now()}`,
-          withFrontendKey({ cache: "no-store" })
+          { ...withFrontendKey(), signal: ac.signal }
         );
         const json = res.ok ? await res.json() : null;
         const url = normalizeLogoUrl(json?.logo?.url);
@@ -126,16 +132,23 @@ export default function TempHeader({
         if (!cancelled) setLogoUrl(LOCAL_LOGO_FALLBACK);
       }
     })();
+
     return () => {
       cancelled = true;
+      ac.abort();
     };
   }, []);
+
+  // a11y ids
+  const menuId = useId();
 
   return (
     <>
       <header
         className="sticky top-0 z-50 bg-white/95 backdrop-blur border-b border-gray-200 hidden lg:block"
         style={{ fontFamily: "var(--font-poppins), Arial, Helvetica, sans-serif" }}
+        role="banner"
+        aria-label="Primary header"
       >
         <div className="mx-auto px-4 sm:px-6 lg:px-6 xl:px-8 max-w-[1200px] xl:max-w-[1360px] 2xl:max-w-[1536px]">
           <div className="flex items-center gap-2 py-2 sm:py-3 lg:py-4">
@@ -160,14 +173,18 @@ export default function TempHeader({
 
             {/* Center: Logo (fetched) */}
             <div className="flex-1 min-w-0 flex items-center justify-center">
-              <Link href="/home" className="inline-block" aria-label="Creative Prints Home">
+              <Link href="/home" prefetch className="inline-block" aria-label="Creative Prints Home">
+                {/* Logo is part of LCP → do not lazy-load */}
                 <img
                   src={logoUrl}
                   alt="Printshop logo"
+                  width={200}
+                  height={48}
                   className="h-auto w-10 sm:w-36 lg:w-[180px] xl:w-[180px] 2xl:w-[200px] max-w-full"
+                  decoding="sync"
                   onError={(e) => {
                     const el = e.currentTarget as HTMLImageElement;
-                    el.onerror = null;
+                    (el as any).onerror = null;
                     el.src = LOCAL_LOGO_FALLBACK;
                   }}
                 />
@@ -186,25 +203,32 @@ export default function TempHeader({
                   >
                     <img
                       src="https://img.icons8.com/?size=100&id=ii6Lr4KivOiE&format=png&color=FFFFFF"
-                      alt="Cart"
+                      alt=""
                       width={20}
                       height={20}
                       className="w-5 h-5"
+                      loading="lazy"
+                      decoding="async"
+                      aria-hidden="true"
                     />
                     <span className="whitespace-nowrap text-sm font-medium text-white">Cart</span>
                   </button>
                 ) : (
                   <Link
                     href="/checkout2"
+                    prefetch
                     className="cursor-pointer flex items-center gap-2 bg-[#8B1C1C] hover:bg-[#6f1414] text-white text-xs font-medium px-6 sm:px-8 lg:px-5 xl:px-8 py-1.5 rounded-full transition-all duration-200 shadow-sm hover:shadow-md"
                     aria-label="Open cart"
                   >
                     <img
                       src="https://img.icons8.com/?size=100&id=ii6Lr4KivOiE&format=png&color=FFFFFF"
-                      alt="Cart"
+                      alt=""
                       width={20}
                       height={20}
                       className="w-5 h-5"
+                      loading="lazy"
+                      decoding="async"
+                      aria-hidden="true"
                     />
                     <span className="whitespace-nowrap text-sm font-medium text-white">Cart</span>
                   </Link>
@@ -212,26 +236,33 @@ export default function TempHeader({
 
                 <Link
                   href="/blog"
+                  prefetch
                   className="cursor-pointer flex items-center gap-2 bg-[#8B1C1C] hover:bg-[#6f1414] text-white text-xs font-medium px-0 sm:px-5 lg:px-4 xl:px-5 py-1.5 rounded-full transition-all duration-200 shadow-sm hover:shadow-md"
                   aria-label="Blog"
                 >
                   <img
                     src="https://img.icons8.com/?size=100&id=WX84CKOI9WcJ&format=png&color=FFFFFF"
-                    alt="Blog"
+                    alt=""
                     width={20}
                     height={20}
                     className="w-5 h-5"
+                    loading="lazy"
+                    decoding="async"
+                    aria-hidden="true"
                   />
                   <span className="whitespace-nowrap text-sm font-medium text-white">Blog</span>
                 </Link>
 
-                <Link href="/contact" className="flex gap-2 items-center flex-nowrap" aria-label="Contact">
+                <Link href="/contact" prefetch className="flex gap-2 items-center flex-nowrap" aria-label="Contact">
                   <img
                     src="https://img.icons8.com/?size=100&id=Ib9FADThtmSf&format=png&color=000000"
-                    alt="Help Centre icon"
+                    alt=""
                     width={20}
                     height={20}
                     className="w-5 h-5"
+                    loading="lazy"
+                    decoding="async"
+                    aria-hidden="true"
                   />
                   <span className="whitespace-nowrap text-sm font-medium text-black">Contact</span>
                 </Link>
@@ -239,13 +270,16 @@ export default function TempHeader({
                 <div className="hidden sm:flex gap-2 items-center">
                   <img
                     src="https://img.icons8.com/?size=100&id=s7eHaFDy5Rqu&format=png&color=000000"
-                    alt="UAE icon"
+                    alt=""
                     width={21}
                     height={21}
                     className="w-[21px] h-[21px]"
+                    loading="lazy"
+                    decoding="async"
+                    aria-hidden="true"
                   />
                   <span className="whitespace-nowrap text-sm font-medium text-black">
-                    <a href="/about">About</a>
+                    <Link href="/about" prefetch>About</Link>
                   </span>
                 </div>
 
@@ -257,16 +291,19 @@ export default function TempHeader({
                       aria-label="Open login modal"
                       type="button"
                     >
-                      <div className="flex items-center admin-panel">
+                      <span className="flex items-center admin-panel">
                         <img
                           src="https://img.icons8.com/?size=100&id=4kuCnjaqo47m&format=png&color=000000"
-                          alt="Login"
+                          alt=""
                           width={20}
                           height={20}
                           className="mr-1"
+                          loading="lazy"
+                          decoding="async"
+                          aria-hidden="true"
                         />
                         <span className="whitespace-nowrap text-sm font-medium text-black">Login</span>
-                      </div>
+                      </span>
                     </button>
                   ) : (
                     // ================= USER MENU =================
@@ -277,38 +314,41 @@ export default function TempHeader({
                         onKeyDown={onMenuToggleKeyDown}
                         aria-haspopup="menu"
                         aria-expanded={userMenuOpen}
-                        aria-controls="user-menu"
+                        aria-controls={menuId}
                         className="flex items-center gap-2 px-3 py-1.5 rounded-full hover:bg-gray-100 transition"
                         type="button"
                       >
                         <img
                           src="https://img.icons8.com/?size=100&id=2oz92AdXqQrC&format=png&color=000000"
-                          alt="User Profile"
+                          alt=""
                           width={20}
                           height={20}
                           className="ml-2"
+                          loading="lazy"
+                          decoding="async"
+                          aria-hidden="true"
                         />
-                        <span className="whitespace-nowrap text-sm font-medium text-black">
-                          {displayName}
-                        </span>
+                        <span className="whitespace-nowrap text-sm font-medium text-black">{displayName}</span>
                         <svg
                           viewBox="0 0 20 20"
                           fill="currentColor"
                           className={`w-4 h-4 transition-transform ${userMenuOpen ? "rotate-180" : ""}`}
                           aria-hidden="true"
                         >
-                          <path d="M5.23 7.21a.75.75 0 011.06.02L10 10.217l3.71-3.0a.75.75 0 111.04 1.08l-4.24 3.43a.75.75 0 01-.98 0L5.21 8.29a.75.75 0 01.02-1.08z" />
+                          <path d="M5.25 7.5L10 12.25L14.75 7.5" />
                         </svg>
                       </button>
 
                       {userMenuOpen && (
                         <div
-                          id="user-menu"
+                          id={menuId}
                           role="menu"
                           className="absolute right-0 mt-2 w-56 bg-white rounded-xl border border-gray-200 shadow-lg z-50 overflow-hidden"
+                          aria-label="User menu"
                         >
                           <Link
                             href="/orders"
+                            prefetch
                             role="menuitem"
                             className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 text-sm text-gray-800"
                             onClick={closeMenu}
@@ -318,12 +358,16 @@ export default function TempHeader({
                               alt=""
                               width={18}
                               height={18}
+                              loading="lazy"
+                              decoding="async"
+                              aria-hidden="true"
                             />
                             My Orders
                           </Link>
 
                           <Link
                             href="/personal-profile"
+                            prefetch
                             role="menuitem"
                             className="flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 text-sm text-gray-800"
                             onClick={closeMenu}
@@ -333,6 +377,9 @@ export default function TempHeader({
                               alt=""
                               width={18}
                               height={18}
+                              loading="lazy"
+                              decoding="async"
+                              aria-hidden="true"
                             />
                             View Profile
                           </Link>
@@ -348,6 +395,9 @@ export default function TempHeader({
                               alt=""
                               width={18}
                               height={18}
+                              loading="lazy"
+                              decoding="async"
+                              aria-hidden="true"
                             />
                             Logout
                           </button>

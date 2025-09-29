@@ -1,71 +1,104 @@
 // app/components/SafeImage.tsx
 "use client";
 
+import React, { forwardRef, memo } from "react";
 import Image, { ImageProps } from "next/image";
-import React, { ImgHTMLAttributes } from "react";
 
 /**
- * SafeImage: wraps next/image, blocks right-click/drag, and
- * forwards Tailwind classes to the actual <img>.
+ * SafeImage
+ * - Wraps next/image
+ * - Suppresses right-click + drag (configurable)
+ * - Keeps Tailwind classes on the actual <img> element
  *
- * - Use `className` for the IMAGE (object-cover, rounded, transitions, etc.)
- * - Use `wrapperClassName` for the WRAPPER sizing/positioning when needed.
- * - `overlay` (default true) adds an invisible layer that intercepts clicks.
+ * a11y: The overlay is aria-hidden and non-focusable.
+ *       Avoid using overlay on tappable/clickable images.
  */
 type SafeImageProps = ImageProps & {
+  /** Extra classes for the wrapper div (layout/sizing) */
   wrapperClassName?: string;
+  /**
+   * Adds a transparent overlay on top of the image to discourage long-press save.
+   * Note: overlay intercepts pointer events; keep it off when the image is interactive.
+   * Default: true (matches previous behavior)
+   */
   overlay?: boolean;
+  /**
+   * Prevent context menu and dragging on the image. Default: true.
+   * (Leaving this on does not block keyboard or screen-reader interactions.)
+   */
+  protect?: boolean;
 };
 
-export default function SafeImage({
-  className = "",
-  wrapperClassName = "",
-  overlay = true,
-  alt,
-  ...props
-}: SafeImageProps) {
-  return (
-    <div
-      className={`relative select-none ${wrapperClassName}`}
-      onContextMenu={(e) => e.preventDefault()}
-      onMouseDown={(e) => e.preventDefault()}
-      onDragStart={(e) => e.preventDefault()}
-      onTouchStart={(e) => e.preventDefault()}
-    >
-      {overlay && <div className="absolute inset-0 z-10" />}
-      <Image alt={alt} draggable={false} className={className} {...props} />
-    </div>
-  );
-}
+const SafeImage = memo(
+  forwardRef<HTMLDivElement, SafeImageProps>(function SafeImage(
+    { className = "", wrapperClassName = "", overlay = true, protect = true, alt, ...props },
+    ref
+  ) {
+    return (
+      <div
+        ref={ref}
+        className={`relative select-none ${wrapperClassName}`}
+        onContextMenu={protect ? (e) => e.preventDefault() : undefined}
+        // Don't block mouse/touch generally; rely on draggable=false below.
+        // This preserves accessibility and clickability when wrapped in links.
+      >
+        {overlay && (
+          <div
+            className="absolute inset-0 z-10"
+            aria-hidden="true"
+            // Overlay intentionally intercepts pointer events; keep it out of the a11y tree.
+          />
+        )}
+        <Image
+          alt={alt}
+          // Prevent dragging the image to save
+          draggable={protect ? false : undefined}
+          // Tailwind goes to the actual <img> element rendered by next/image
+          className={className}
+          // Defaults that help performance unless caller overrides with `priority`
+          loading={props.priority ? undefined : props.loading ?? "lazy"}
+          {...props}
+        />
+      </div>
+    );
+  })
+);
+
+export default SafeImage;
 
 /**
- * SafeImg: same idea for legacy places using native <img>.
- *
- * - `className` styles the IMG
- * - `wrapperClassName` styles the wrapper
+ * SafeImg
+ * - Native <img> variant for legacy spots.
+ * - Same API shape as SafeImage for wrapperClassName/overlay/protect.
  */
-export type SafeImgProps = ImgHTMLAttributes<HTMLImageElement> & {
+export type SafeImgProps = React.ImgHTMLAttributes<HTMLImageElement> & {
   wrapperClassName?: string;
   overlay?: boolean;
+  protect?: boolean;
 };
 
-export function SafeImg({
-  className = "",
-  wrapperClassName = "",
-  overlay = true,
-  alt = "",
-  ...props
-}: SafeImgProps) {
-  return (
-    <div
-      className={`relative select-none ${wrapperClassName}`}
-      onContextMenu={(e) => e.preventDefault()}
-      onMouseDown={(e) => e.preventDefault()}
-      onDragStart={(e) => e.preventDefault()}
-      onTouchStart={(e) => e.preventDefault()}
-    >
-      {overlay && <div className="absolute inset-0 z-10" />}
-      <img alt={alt} draggable={false} className={className} {...props} />
-    </div>
-  );
-}
+export const SafeImg = memo(
+  forwardRef<HTMLDivElement, SafeImgProps>(function SafeImg(
+    { className = "", wrapperClassName = "", overlay = true, protect = true, alt = "", ...props },
+    ref
+  ) {
+    return (
+      <div
+        ref={ref}
+        className={`relative select-none ${wrapperClassName}`}
+        onContextMenu={protect ? (e) => e.preventDefault() : undefined}
+      >
+        {overlay && <div className="absolute inset-0 z-10" aria-hidden="true" />}
+        <img
+          alt={alt}
+          draggable={protect ? false : undefined}
+          className={className}
+          // Reasonable perf defaults for plain <img>
+          loading={props.loading ?? "lazy"}
+          decoding={(props as any)?.decoding ?? "async"}
+          {...props}
+        />
+      </div>
+    );
+  })
+);

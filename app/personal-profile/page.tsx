@@ -1,8 +1,15 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { toast } from "react-toastify";
 import { useRouter } from "next/navigation";
+import Script from "next/script";
 
 // Layout components
 import { ChatBot } from "../components/ChatBot";
@@ -30,14 +37,18 @@ import {
   doc,
   getDoc,
   setDoc,
-  updateDoc,
   serverTimestamp,
 } from "firebase/firestore";
 
-// Local-only avatar storage key
-const picKey = (uid?: string) => (uid ? `profile_picture_${uid}` : "profile_picture");
+/* ──────────────────────────────────────────────────────────
+   Local-only avatar storage key
+   ────────────────────────────────────────────────────────── */
+const picKey = (uid?: string) =>
+  (uid ? `profile_picture_${uid}` : "profile_picture");
 
-// Emirates ID helpers
+/* ──────────────────────────────────────────────────────────
+   Emirates ID helpers
+   ────────────────────────────────────────────────────────── */
 const EMIRATES_ID_REGEX = /^784-\d{4}-\d{7}-\d$/;
 const formatEmiratesId = (raw: string) => {
   const digits = raw.replace(/\D/g, "").slice(0, 15);
@@ -52,44 +63,54 @@ const formatEmiratesId = (raw: string) => {
   return out;
 };
 
-// Small UI helpers
-const SectionCard: React.FC<React.PropsWithChildren<{ title: string; subtitle?: string }>> = ({
-  title,
-  subtitle,
-  children,
-}) => (
-  <div className="rounded-2xl border border-gray-200 bg-white shadow-sm p-5">
-    <div className="mb-4">
+/* ──────────────────────────────────────────────────────────
+   Small UI helpers
+   ────────────────────────────────────────────────────────── */
+const SectionCard: React.FC<
+  React.PropsWithChildren<{ title: string; subtitle?: string }>
+> = ({ title, subtitle, children }) => (
+  <section className="rounded-2xl border border-gray-200 bg-white shadow-sm p-5">
+    <header className="mb-4">
       <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
-      {subtitle ? <p className="text-sm text-gray-500 mt-1">{subtitle}</p> : null}
-    </div>
+      {subtitle ? (
+        <p className="text-sm text-gray-500 mt-1">{subtitle}</p>
+      ) : null}
+    </header>
     {children}
-  </div>
+  </section>
 );
 
-const Label: React.FC<React.PropsWithChildren<{ htmlFor?: string }>> = ({ htmlFor, children }) => (
-  <label htmlFor={htmlFor} className="block text-sm font-medium text-gray-700 mb-1">
+const Label: React.FC<
+  React.PropsWithChildren<{ htmlFor?: string }>
+> = ({ htmlFor, children }) => (
+  <label
+    htmlFor={htmlFor}
+    className="block text-sm font-medium text-gray-700 mb-1"
+  >
     {children}
   </label>
 );
 
-const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttributes<HTMLInputElement>>(
-  function InputBase({ className = "", ...props }, ref) {
-    return (
-      <input
-        ref={ref}
-        className={`w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#891f1a]/70 ${className}`}
-        {...props}
-      />
-    );
-  }
-);
+const Input = React.forwardRef<
+  HTMLInputElement,
+  React.InputHTMLAttributes<HTMLInputElement>
+>(function InputBase({ className = "", ...props }, ref) {
+  return (
+    <input
+      ref={ref}
+      className={`w-full rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#891f1a]/70 ${className}`}
+      {...props}
+    />
+  );
+});
 
 const Button: React.FC<
-  React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "outline" | "ghost" }
+  React.ButtonHTMLAttributes<HTMLButtonElement> & {
+    variant?: "primary" | "outline" | "ghost";
+  }
 > = ({ variant = "primary", className = "", ...props }) => {
   const base =
-    "inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition focus:outline-none";
+    "inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400";
   const styles =
     variant === "primary"
       ? "bg-[#ff5858] text-white hover:bg-[#e94b4b]"
@@ -99,20 +120,35 @@ const Button: React.FC<
   return <button className={`${base} ${styles} ${className}`} {...props} />;
 };
 
+/* ──────────────────────────────────────────────────────────
+   Page
+   ────────────────────────────────────────────────────────── */
 export default function PersonalProfile() {
   const router = useRouter();
 
   // 🔐 AUTH GATE
   const [isAuthed, setIsAuthed] = useState<boolean | null>(null);
 
+  // Prevent state updates after unmount
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   useEffect(() => {
     let unsub = () => {};
     try {
       unsub = onAuthStateChanged(auth, (u) => {
         const ok = !!u;
+        if (!mountedRef.current) return;
         setIsAuthed(ok);
         if (!ok) {
-          toast.warn("Please sign in to access your profile.");
+          toast.warn("Please sign in to access your profile.", {
+            role: "status",
+          });
           router.replace("/home"); // or "/home?login=1"
         }
       });
@@ -153,13 +189,18 @@ export default function PersonalProfile() {
 
   const isAuthedMemo = useMemo(() => isAuthed === true, [isAuthed]);
 
-  // ---------- Firestore helpers ----------
+  /* ──────────────────────────────────────────────────────
+     Firestore helpers
+     ────────────────────────────────────────────────────── */
   const userRef = useCallback((id: string) => doc(db, "users", id), []);
 
   const upsertUser = useCallback(
     async (id: string, data: Record<string, any>) => {
-      // Merge = true → idempotent create/update
-      await setDoc(userRef(id), { ...data, updated_at: serverTimestamp() }, { merge: true });
+      await setDoc(
+        userRef(id),
+        { ...data, updated_at: serverTimestamp() },
+        { merge: true }
+      );
     },
     [userRef]
   );
@@ -172,7 +213,9 @@ export default function PersonalProfile() {
     [userRef]
   );
 
-  // ---------- Bootstrap after auth ----------
+  /* ──────────────────────────────────────────────────────
+     Bootstrap after auth
+     ────────────────────────────────────────────────────── */
   useEffect(() => {
     if (!isAuthedMemo) return;
 
@@ -181,6 +224,7 @@ export default function PersonalProfile() {
       setUid(null);
       return;
     }
+
     setUid(u.uid);
     setCurrentEmail(u.email || "");
     setEmailVerified(!!u.emailVerified);
@@ -205,12 +249,15 @@ export default function PersonalProfile() {
           created_at: serverTimestamp(),
         });
       } catch (e: any) {
-        toast.error(e?.message || "Failed to initialize your profile in Firestore");
+        toast.error(
+          e?.message || "Failed to initialize your profile in Firestore"
+        );
       }
 
       // 2) Read extended profile fields
       try {
         const me = await readUser(u.uid);
+        if (!mountedRef.current) return;
         if (me) {
           setPhone(me.phone_number || me.phone || "");
           setAddress(me.address || "");
@@ -226,26 +273,36 @@ export default function PersonalProfile() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthedMemo]);
 
-  // ---------- Reauth (provider-aware) ----------
+  /* ──────────────────────────────────────────────────────
+     Reauth (provider-aware)
+     ────────────────────────────────────────────────────── */
   const reauthSmart = useCallback(async () => {
     const u = auth.currentUser;
     if (!u) throw new Error("Not authenticated");
-    const hasPasswordProvider = (u.providerData || []).some((p) => p.providerId === "password");
+    const hasPasswordProvider = (u.providerData || []).some(
+      (p) => p.providerId === "password"
+    );
     if (hasPasswordProvider) {
       if (!u.email) throw new Error("No email on file");
       if (!passwordGate) throw new Error("Password is required for this action");
       const cred = EmailAuthProvider.credential(u.email, passwordGate);
       return reauthenticateWithCredential(u, cred);
     }
-    const hasGoogle = (u.providerData || []).some((p) => p.providerId === "google.com");
+    const hasGoogle = (u.providerData || []).some(
+      (p) => p.providerId === "google.com"
+    );
     if (hasGoogle) {
       const provider = new GoogleAuthProvider();
       return reauthenticateWithPopup(u, provider);
     }
-    throw new Error("Reauthentication method not available. Sign out and sign in again.");
+    throw new Error(
+      "Reauthentication method not available. Sign out and sign in again."
+    );
   }, [passwordGate]);
 
-  // ---------- Status refresh ----------
+  /* ──────────────────────────────────────────────────────
+     Status refresh
+     ────────────────────────────────────────────────────── */
   const refreshStatus = async () => {
     try {
       const u = auth.currentUser;
@@ -253,13 +310,15 @@ export default function PersonalProfile() {
       await reload(u);
       setCurrentEmail(u.email || "");
       setEmailVerified(!!u.emailVerified);
-      toast.success("Status refreshed.");
+      toast.success("Status refreshed.", { role: "status" });
     } catch (e: any) {
       toast.error(e?.message || "Failed to refresh");
     }
   };
 
-  // ---------- Save actions ----------
+  /* ──────────────────────────────────────────────────────
+     Save actions
+     ────────────────────────────────────────────────────── */
   const saveName = async () => {
     try {
       await reauthSmart();
@@ -295,7 +354,8 @@ export default function PersonalProfile() {
 
       await updateEmail(u, email.trim());
       await sendEmailVerification(u, {
-        url: typeof window !== "undefined" ? window.location.origin : undefined,
+        url:
+          typeof window !== "undefined" ? window.location.origin : undefined,
       });
       await reload(u);
       setCurrentEmail(u.email || email);
@@ -322,7 +382,9 @@ export default function PersonalProfile() {
       return true; // optional
     }
     if (!EMIRATES_ID_REGEX.test(value)) {
-      setEmiratesError("Invalid Emirates ID. Required format: 784-YYYY-NNNNNNN-C");
+      setEmiratesError(
+        "Invalid Emirates ID. Required format: 784-YYYY-NNNNNNN-C"
+      );
       return false;
     }
     setEmiratesError("");
@@ -345,9 +407,7 @@ export default function PersonalProfile() {
       };
       if (emiratesId) payload.emirates_id = emiratesId;
 
-      // upsert (no reauth required for these fields)
       await upsertUser(u.uid, payload);
-
       toast.success("Contact info updated");
     } catch (e: any) {
       toast.error(e?.message || "Failed to update contact info");
@@ -356,7 +416,8 @@ export default function PersonalProfile() {
 
   const savePassword = async () => {
     if (!newPassword) return toast.error("Enter a new password");
-    if (newPassword !== confirmNewPassword) return toast.error("Passwords do not match");
+    if (newPassword !== confirmNewPassword)
+      return toast.error("Passwords do not match");
     try {
       await reauthSmart();
       const u = auth.currentUser;
@@ -391,7 +452,8 @@ export default function PersonalProfile() {
       const u = auth.currentUser;
       if (!u) return toast.error("Not signed in");
       await sendEmailVerification(u, {
-        url: typeof window !== "undefined" ? window.location.origin : undefined,
+        url:
+          typeof window !== "undefined" ? window.location.origin : undefined,
       });
       toast.success(`Verification email sent to ${u.email}`);
     } catch (e: any) {
@@ -402,6 +464,11 @@ export default function PersonalProfile() {
   // Local-only avatar
   const onSelectPic = async (file?: File | null) => {
     if (!file) return;
+    // lightweight guard: 2MB cap
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error("Please upload an image ≤ 2MB");
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       const dataUrl = String(reader.result || "");
@@ -417,40 +484,83 @@ export default function PersonalProfile() {
     reader.readAsDataURL(file);
   };
 
-  const GateHint = (
-    <p className="text-xs text-gray-500 mt-2">
-      These changes require your current sign-in to be re-verified.
-      <button onClick={forgotPassword} className="ml-1 underline text-[#891f1a]">
-        Forgot password
-      </button>
-      .
-    </p>
+  const GateHint = useMemo(
+    () => (
+      <p className="text-xs text-gray-500 mt-2">
+        These changes require your current sign-in to be re-verified.
+        <button
+          onClick={forgotPassword}
+          className="ml-1 underline text-[#891f1a]"
+        >
+          Forgot password
+        </button>
+        .
+      </p>
+    ),
+    [forgotPassword]
   );
 
-  const emiratesOk = !emiratesError && (!emiratesId || EMIRATES_ID_REGEX.test(emiratesId));
+  const emiratesOk =
+    !emiratesError && (!emiratesId || EMIRATES_ID_REGEX.test(emiratesId));
 
   if (isAuthed === null) {
     return (
-      <div className="min-h-screen flex items-center justify-center text-xl text-gray-600">
+      <div
+        className="min-h-screen flex items-center justify-center text-xl text-gray-600"
+        role="status"
+        aria-live="polite"
+      >
         Checking sign-in…
       </div>
     );
   }
   if (isAuthed === false) return null;
 
+  // SEO hygiene: profile pages should not be indexed
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "";
+  const breadcrumbLd = {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "Home", item: `${siteUrl}/` },
+      {
+        "@type": "ListItem",
+        position: 2,
+        name: "Personal Profile",
+        item: `${siteUrl}/personal-profile`,
+      },
+    ],
+  };
+
   return (
     <>
+      {/* Robots noindex/nofollow for private page */}
+      <Script id="robots-profile" strategy="afterInteractive">{`(function(){var m=document.createElement('meta');m.name='robots';m.content='noindex,nofollow';document.head.appendChild(m);document.title='Personal Profile';})();`}</Script>
+      <Script
+        id="breadcrumb-jsonld"
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd) }}
+      />
+
       {/* Top Components */}
       <Header />
       <LogoSection />
       <Navbar />
 
-      <main className="min-h-screen bg-gray-50">
+      <main
+        className="min-h-screen bg-gray-50"
+        aria-labelledby="profile-title"
+      >
         <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-8">
           {/* Header block */}
           <div className="mb-6 flex items-center justify-between">
             <div>
-              <h1 className="text-2xl font-bold tracking-tight text-gray-900">Personal Profile</h1>
+              <h1
+                id="profile-title"
+                className="text-2xl font-bold tracking-tight text-gray-900"
+              >
+                Personal Profile
+              </h1>
               <p className="text-sm text-gray-600 mt-1">
                 Manage your identity, contact details, and security preferences.
               </p>
@@ -464,8 +574,12 @@ export default function PersonalProfile() {
                   Send verification link
                 </Button>
               ) : (
-                <span className="inline-flex items-center gap-1 text-sm text-green-700">
-                  <span className="h-2 w-2 rounded-full bg-green-600" /> Email verified
+                <span
+                  className="inline-flex items-center gap-1 text-sm text-green-700"
+                  aria-live="polite"
+                >
+                  <span className="h-2 w-2 rounded-full bg-green-600" /> Email
+                  verified
                 </span>
               )}
             </div>
@@ -475,12 +589,21 @@ export default function PersonalProfile() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             {/* Left column: Avatar */}
             <div className="lg:col-span-1">
-              <SectionCard title="Profile Picture" subtitle="Stored locally in your browser">
+              <SectionCard
+                title="Profile Picture"
+                subtitle="Stored locally in your browser"
+              >
                 <div className="flex items-center gap-4">
                   <div className="relative h-24 w-24 overflow-hidden rounded-full border border-gray-200 bg-gray-100">
                     {profilePic ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={profilePic} alt="Profile" className="h-full w-full object-cover" />
+                      <img
+                        src={profilePic}
+                        alt="Profile avatar"
+                        className="h-full w-full object-cover"
+                        loading="lazy"
+                        decoding="async"
+                      />
                     ) : (
                       <div className="h-full w-full flex items-center justify-center text-gray-400">
                         No Image
@@ -493,9 +616,13 @@ export default function PersonalProfile() {
                       type="file"
                       accept="image/*"
                       className="hidden"
+                      aria-label="Upload profile picture"
                       onChange={(e) => onSelectPic(e.currentTarget.files?.[0])}
                     />
-                    <Button variant="outline" onClick={() => fileInputRef.current?.click()}>
+                    <Button
+                      variant="outline"
+                      onClick={() => fileInputRef.current?.click()}
+                    >
                       Upload
                     </Button>
                     {profilePic ? (
@@ -514,7 +641,8 @@ export default function PersonalProfile() {
                   </div>
                 </div>
                 <p className="text-xs text-gray-500 mt-3">
-                  This image does not sync to the server. Clearing browser storage will remove it.
+                  This image does not sync to the server. Clearing browser
+                  storage will remove it.
                 </p>
               </SectionCard>
             </div>
@@ -530,6 +658,7 @@ export default function PersonalProfile() {
                       value={displayName}
                       onChange={(e) => setDisplayName(e.target.value)}
                       placeholder="Your name"
+                      autoComplete="name"
                     />
                   </div>
                   <div>
@@ -540,16 +669,20 @@ export default function PersonalProfile() {
                       onChange={(e) => setEmail(e.target.value)}
                       type="email"
                       placeholder="you@example.com"
+                      autoComplete="email"
                     />
                   </div>
                   <div className="md:col-span-2">
-                    <Label htmlFor="gate">Current password (only if your account uses password)</Label>
+                    <Label htmlFor="gate">
+                      Current password (only if your account uses password)
+                    </Label>
                     <Input
                       id="gate"
                       value={passwordGate}
                       onChange={(e) => setPasswordGate(e.target.value)}
                       type="password"
                       placeholder="••••••••"
+                      autoComplete="current-password"
                     />
                     {GateHint}
                   </div>
@@ -571,7 +704,9 @@ export default function PersonalProfile() {
                       value={phone}
                       onChange={(e) => setPhone(e.target.value)}
                       inputMode="tel"
+                      autoComplete="tel"
                       placeholder="03xx-xxxxxxx"
+                      pattern="[0-9 +()-]*"
                     />
                   </div>
                   <div>
@@ -580,13 +715,16 @@ export default function PersonalProfile() {
                       id="address"
                       value={address}
                       onChange={(e) => setAddress(e.target.value)}
+                      autoComplete="street-address"
                       placeholder="Street, City, Country"
                     />
                   </div>
 
                   {/* Emirates ID */}
                   <div className="md:col-span-2">
-                    <Label htmlFor="emiratesId">Emirates ID (Required format: 784-YYYY-NNNNNNN-C)</Label>
+                    <Label htmlFor="emiratesId">
+                      Emirates ID (Required format: 784-YYYY-NNNNNNN-C)
+                    </Label>
                     <Input
                       id="emiratesId"
                       value={emiratesId}
@@ -594,7 +732,9 @@ export default function PersonalProfile() {
                         const formatted = formatEmiratesId(e.target.value);
                         setEmiratesId(formatted);
                         if (formatted && !EMIRATES_ID_REGEX.test(formatted)) {
-                          setEmiratesError("Invalid Emirates ID. Required format: 784-YYYY-NNNNNNN-C");
+                          setEmiratesError(
+                            "Invalid Emirates ID. Required format: 784-YYYY-NNNNNNN-C"
+                          );
                         } else {
                           setEmiratesError("");
                         }
@@ -602,11 +742,14 @@ export default function PersonalProfile() {
                       onBlur={(e) => validateEmiratesId(e.target.value)}
                       placeholder="784-YYYY-NNNNNNN-C"
                       inputMode="numeric"
+                      autoComplete="off"
                     />
                     {emiratesError ? (
                       <p className="text-xs text-red-600 mt-1">{emiratesError}</p>
                     ) : (
-                      <p className="text-xs text-gray-500 mt-1">Only this format is acceptable.</p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        Only this format is acceptable.
+                      </p>
                     )}
                   </div>
                 </div>
@@ -617,16 +760,22 @@ export default function PersonalProfile() {
                 </div>
               </SectionCard>
 
-              <SectionCard title="Security" subtitle="Update your password (Firebase only)">
+              <SectionCard
+                title="Security"
+                subtitle="Update your password (Firebase only)"
+              >
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                   <div>
-                    <Label htmlFor="current-pass">Current password (if applicable)</Label>
+                    <Label htmlFor="current-pass">
+                      Current password (if applicable)
+                    </Label>
                     <Input
                       id="current-pass"
                       value={passwordGate}
                       onChange={(e) => setPasswordGate(e.target.value)}
                       type="password"
                       placeholder="••••••••"
+                      autoComplete="current-password"
                     />
                   </div>
                   <div>
@@ -637,6 +786,7 @@ export default function PersonalProfile() {
                       onChange={(e) => setNewPassword(e.target.value)}
                       type="password"
                       placeholder="At least 6 characters"
+                      autoComplete="new-password"
                     />
                   </div>
                   <div>
@@ -647,6 +797,7 @@ export default function PersonalProfile() {
                       onChange={(e) => setConfirmNewPassword(e.target.value)}
                       type="password"
                       placeholder="Repeat new password"
+                      autoComplete="new-password"
                     />
                   </div>
                 </div>
@@ -670,7 +821,9 @@ export default function PersonalProfile() {
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="w-28 text-gray-500">Verified</span>
-                    <span className={emailVerified ? "text-green-700" : "text-amber-700"}>
+                    <span
+                      className={emailVerified ? "text-green-700" : "text-amber-700"}
+                    >
                       {emailVerified ? "Yes" : "No"}
                     </span>
                   </div>

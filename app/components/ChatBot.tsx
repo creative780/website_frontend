@@ -1,28 +1,27 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo, memo } from "react";
 import { Send, Minus, MessageCircle, ChevronRight } from "lucide-react";
 
-// util
+// ---- util
 const cls = (...parts: Array<string | false | null | undefined>) =>
   parts.filter(Boolean).join(" ");
 
-const nowTime = () =>
-  new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+const fmt = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" });
 
 // IMPORTANT: Make sure this really points to Django (e.g., "http://127.0.0.1:8000")
 import { API_BASE_URL } from "../utils/api";
 
-type Msg = { id: number; type: "bot" | "user"; text: string; time: string };
+type Msg = { id: string; type: "bot" | "user"; text: string; ts: number };
 
 // ---- Frontend key helpers ----
 const FRONTEND_KEY = (process.env.NEXT_PUBLIC_FRONTEND_KEY || "").trim();
 const withFrontendKey = (init: RequestInit = {}): RequestInit => {
   const headers = new Headers(init.headers || {});
-  if (!FRONTEND_KEY) {
-    console.warn(
-      "NEXT_PUBLIC_FRONTEND_KEY is empty; requests may be forbidden."
-    );
+  if (!FRONTEND_KEY && process.env.NODE_ENV !== "production") {
+    // avoid noisy console in prod
+    // eslint-disable-next-line no-console
+    console.warn("NEXT_PUBLIC_FRONTEND_KEY is empty; requests may be forbidden.");
   }
   headers.set("X-Frontend-Key", FRONTEND_KEY);
   return { ...init, headers };
@@ -48,7 +47,7 @@ const readAsJsonOrThrow = async (res: Response) => {
   }
 };
 
-const fetchJSON = async (url: string, init?: RequestInit) => {
+const fetchJSON = async (url: string, init?: RequestInit, signal?: AbortSignal) => {
   if (!API_BASE_URL || API_BASE_URL.startsWith("/") || API_BASE_URL === "") {
     throw new Error(
       `API_BASE_URL appears invalid ("${API_BASE_URL}"). It must be an absolute URL to your Django server.`
@@ -61,6 +60,7 @@ const fetchJSON = async (url: string, init?: RequestInit) => {
       "Content-Type": "application/json",
     },
     mode: "cors",
+    signal,
     ...init,
   };
   const finalInit = withFrontendKey(baseInit);
@@ -84,8 +84,9 @@ const useReducedMotion = () => {
   return reducedMotion;
 };
 
-// Header
-const ChatHeader = ({
+/* ===================== Subcomponents (memoized) ===================== */
+
+const ChatHeader = memo(function ChatHeader({
   botName,
   onClose,
   ariaCloseLabel,
@@ -93,48 +94,56 @@ const ChatHeader = ({
   botName: string;
   onClose: () => void;
   ariaCloseLabel: string;
-}) => (
-  <header className="p-5 flex items-center justify-between bg-gradient-to-r from-[#891F1A] to-[#a52a24] rounded-t-[28px] md:rounded-t-3xl">
-    <div className="flex items-center space-x-4">
-      <div className="w-12 h-12 bg-white rounded-full flex items-center justify-center shadow-lg">
-        <MessageCircle className="w-6 h-6 text-[#891F1A]" />
-      </div>
-      <div>
-        <h3 className="text-white font-bold text-lg">{botName}</h3>
-        <div className="flex items-center space-x-2">
-          <div className="w-2.5 h-2.5 bg-green-400 rounded-full animate-pulse" />
-          <span className="text-white/90 text-sm font-normal">Online</span>
+}) {
+  return (
+    <header
+      id="chat-header"
+      className="p-5 flex items-center justify-between bg-gradient-to-r from-[#891F1A] to-[#a52a24] rounded-t-[28px] md:rounded-t-3xl"
+      role="heading"
+      aria-level={1}
+    >
+      <div className="flex items-center space-x-4">
+        <div
+          className="w-12 h-12 bg-white rounded-full flex items-center justify-center shadow-lg"
+          aria-hidden="true"
+        >
+          <MessageCircle className="w-6 h-6 text-[#891F1A]" />
+        </div>
+        <div>
+          <h3 className="text-white font-bold text-lg">{botName}</h3>
+          <div className="flex items-center space-x-2" aria-live="polite">
+            <span className="w-2.5 h-2.5 bg-green-400 rounded-full animate-pulse" aria-hidden="true" />
+            <span className="text-white/90 text-sm font-normal">Online</span>
+          </div>
         </div>
       </div>
-    </div>
-    <button
-      onClick={onClose}
-      aria-label={ariaCloseLabel}
-      className="text-white/80 hover:text-white hover:bg-white/20 rounded-full w-10 h-10 flex items-center justify-center transition-colors focus:outline-none focus:ring-2 focus:ring-white/30"
-    >
-      <Minus className="w-5 h-5" />
-    </button>
-  </header>
-);
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label={ariaCloseLabel}
+        className="text-white/80 hover:text-white hover:bg-white/20 rounded-full w-10 h-10 flex items-center justify-center transition-colors focus:outline-none focus:ring-2 focus:ring-white/30"
+      >
+        <Minus className="w-5 h-5" />
+      </button>
+    </header>
+  );
+});
 
-// Empty State
-const EmptyState = () => (
-  <div className="flex flex-col items-center justify-center h-full text-center p-8">
-    <div className="w-16 h-16 bg-gradient-to-r from-[#891F1A] to-[#a52a24] rounded-full flex items-center justify-center mb-4 shadow-lg">
-      <MessageCircle className="w-8 h-8 text-white" />
+const EmptyState = memo(function EmptyState() {
+  return (
+    <div className="flex flex-col items-center justify-center h-full text-center p-8" role="status">
+      <div className="w-16 h-16 bg-gradient-to-r from-[#891F1A] to-[#a52a24] rounded-full flex items-center justify-center mb-4 shadow-lg">
+        <MessageCircle className="w-8 h-8 text-white" aria-hidden="true" />
+      </div>
+      <h3 className="text-lg font-semibold text-gray-800 mb-2">Welcome to CreativeAI</h3>
+      <p className="text-sm text-gray-600 max-w-xs">
+        Start a conversation by typing a message below or selecting a quick prompt.
+      </p>
     </div>
-    <h3 className="text-lg font-semibold text-gray-800 mb-2">
-      Welcome to CreativeAI
-    </h3>
-    <p className="text-sm text-gray-600 max-w-xs">
-      Start a conversation by typing a message below or selecting a quick
-      prompt.
-    </p>
-  </div>
-);
+  );
+});
 
-// Message
-const MessageBubble = ({
+const MessageBubble = memo(function MessageBubble({
   message,
   isUser,
   showTime,
@@ -142,38 +151,34 @@ const MessageBubble = ({
   message: Msg;
   isUser: boolean;
   showTime: boolean;
-}) => (
-  <article className={cls("flex", isUser ? "justify-end" : "justify-start")}>
-    <div
-      className={cls(
-        "flex flex-col max-w-[85%] md:max-w-[80%]",
-        isUser ? "items-end" : "items-start"
-      )}
-    >
-      <div
-        className={cls(
-          "px-4 py-3 rounded-2xl text-sm leading-relaxed break-words",
-          isUser
-            ? "bg-[#891F1A] text-white rounded-br-md"
-            : "bg-white/60 backdrop-blur border border-white/40 text-gray-900 rounded-bl-md"
+}) {
+  return (
+    <article className={cls("flex", isUser ? "justify-end" : "justify-start")}>
+      <div className={cls("flex flex-col max-w-[85%] md:max-w-[80%]", isUser ? "items-end" : "items-start")}>
+        <div
+          className={cls(
+            "px-4 py-3 rounded-2xl text-sm leading-relaxed break-words",
+            isUser
+              ? "bg-[#891F1A] text-white rounded-br-md"
+              : "bg-white/60 backdrop-blur border border-white/40 text-gray-900 rounded-bl-md"
+          )}
+          role="note"
+          aria-label={isUser ? "Your message" : "Bot message"}
+        >
+          {!isUser && <span className="w-2 h-2 bg-[#891F1A] rounded-full mb-2 opacity-60 inline-block" aria-hidden="true" />}
+          <p className="whitespace-pre-line">{message.text}</p>
+        </div>
+        {showTime && (
+          <small className="text-xs text-gray-600 font-light mt-1 px-1" aria-hidden="true">
+            {fmt.format(message.ts)}
+          </small>
         )}
-      >
-        {!isUser && (
-          <div className="w-2 h-2 bg-[#891F1A] rounded-full mb-2 opacity-60" />
-        )}
-        <p className="whitespace-pre-line">{message.text}</p>
       </div>
-      {showTime && (
-        <small className="text-xs text-gray-600 font-light mt-1 px-1">
-          {message.time}
-        </small>
-      )}
-    </div>
-  </article>
-);
+    </article>
+  );
+});
 
-// Prompt chips
-const PromptChips = ({
+const PromptChips = memo(function PromptChips({
   prompts,
   onSelectPrompt,
   reducedMotion,
@@ -181,7 +186,7 @@ const PromptChips = ({
   prompts: string[];
   onSelectPrompt: (prompt: string) => void;
   reducedMotion: boolean;
-}) => {
+}) {
   const [showMore, setShowMore] = useState(false);
   const displayPrompts = showMore ? prompts : prompts.slice(0, 2);
 
@@ -191,6 +196,7 @@ const PromptChips = ({
         {displayPrompts.map((p, i) => (
           <button
             key={`${p}-${i}`}
+            type="button"
             onClick={() => onSelectPrompt(p)}
             className={cls(
               "inline-flex items-center px-4 py-2.5 text-xs font-medium",
@@ -198,6 +204,7 @@ const PromptChips = ({
               !reducedMotion &&
                 "transition-all hover:scale-105 active:scale-95 focus:outline-none focus:ring-2 focus:ring-[#891F1A]/30"
             )}
+            aria-label={`Use prompt: ${p}`}
           >
             {p}
           </button>
@@ -205,39 +212,43 @@ const PromptChips = ({
       </div>
       {prompts.length > 2 && (
         <button
+          type="button"
           onClick={() => setShowMore(!showMore)}
           className={cls(
             "text-xs text-[#891F1A] hover:text-[#a52a24] font-medium flex items-center gap-1",
-            !reducedMotion &&
-              "transition-colors focus:outline-none focus:underline"
+            !reducedMotion && "transition-colors focus:outline-none focus:underline"
           )}
+          aria-expanded={showMore}
+          aria-controls="prompt-list"
         >
           {showMore ? "Show Less" : "+ More"}
           <ChevronRight
-            className={cls(
-              "w-3 h-3",
-              showMore && "rotate-90",
-              !reducedMotion && "transition-transform"
-            )}
+            className={cls("w-3 h-3", showMore && "rotate-90", !reducedMotion && "transition-transform")}
+            aria-hidden="true"
           />
         </button>
       )}
+      {/* Hidden id target for aria-controls; not rendering the list as a region to avoid noise */}
+      <span id="prompt-list" className="sr-only">
+        Prompt list toggle
+      </span>
     </div>
   );
-};
+});
 
 // Chat input — IMPORTANT: onSend(value) gets the current text
 type ChatInputProps = {
   value: string;
   onChange: (value: string) => void;
-  onSend: (value: string) => void; // <-- pass the text up
+  onSend: (value: string) => void;
   onKeyDown: (e: React.KeyboardEvent) => void;
   placeholder: string;
   inputRef: React.RefObject<HTMLInputElement>;
   reducedMotion: boolean;
+  isSending: boolean;
 };
 
-const ChatInput = ({
+const ChatInput = memo(function ChatInput({
   value,
   onChange,
   onSend,
@@ -245,16 +256,12 @@ const ChatInput = ({
   placeholder,
   inputRef,
   reducedMotion,
-}: ChatInputProps) => {
-  const canSend = value.trim().length > 0;
+  isSending,
+}: ChatInputProps) {
+  const canSend = value.trim().length > 0 && !isSending;
 
   return (
-    <div
-      className={cls(
-        "flex items-center space-x-3 p-3 rounded-full shadow-sm",
-        "bg-white/50 backdrop-blur border border-white/40"
-      )}
-    >
+    <div className={cls("flex items-center space-x-3 p-3 rounded-full shadow-sm", "bg-white/50 backdrop-blur border border-white/40")}>
       <input
         ref={inputRef}
         type="text"
@@ -263,19 +270,17 @@ const ChatInput = ({
         onKeyDown={onKeyDown}
         placeholder={placeholder}
         className="flex-1 bg-transparent border-none outline-none text-sm placeholder:text-gray-500 px-2 font-normal text-gray-900"
+        aria-label="Chat input"
+        aria-disabled={isSending || undefined}
       />
       <button
         type="button"
-        onClick={() => onSend(value)} // <-- click sends current value
+        onClick={() => onSend(value)}
         disabled={!canSend}
         className={cls(
           "rounded-full p-3 font-medium focus:outline-none focus:ring-2 focus:ring-offset-1 focus:ring-[#891F1A]/30",
-          canSend
-            ? "bg-[#891F1A] text-white hover:bg-[#a52a24] shadow-md"
-            : "bg-gray-300/60 text-gray-500 cursor-not-allowed",
-          !reducedMotion &&
-            canSend &&
-            "transition-all hover:scale-105 active:scale-95"
+          canSend ? "bg-[#891F1A] text-white hover:bg-[#a52a24] shadow-md" : "bg-gray-300/60 text-gray-500 cursor-not-allowed",
+          !reducedMotion && canSend && "transition-all hover:scale-105 active:scale-95"
         )}
         aria-label="Send message"
       >
@@ -283,7 +288,9 @@ const ChatInput = ({
       </button>
     </div>
   );
-};
+});
+
+/* ===================== Main Component ===================== */
 
 export function ChatBot() {
   // Visual config
@@ -310,52 +317,68 @@ export function ChatBot() {
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const isAtBottomRef = useRef(true);
 
+  // Abort controllers for in-flight fetches
+  const aborters = useRef<AbortController[]>([]);
+
   const reducedMotion = useReducedMotion();
 
   // Greeting bubble (optional)
   const [showHi, setShowHi] = useState(false);
   const [animateIcon, setAnimateIcon] = useState(false);
-  const [hiText] = useState("Hi 👋");
+  const hiText = "Hi 👋";
 
-  const selectPrompt = (p: string) => {
+  const selectPrompt = useCallback((p: string) => {
     setInputValue(p);
+    // focus next tick
     setTimeout(() => inputRef.current?.focus(), 0);
-  };
+  }, []);
 
-  // Load prompts from Django (optional)
+  // Load prompts from Django (idle)
   useEffect(() => {
-    (async () => {
-      try {
-        const data = await fetchJSON(`${API_BASE_URL}/api/bot-prompts/`, {
-          method: "GET",
+    let cancelled = false;
+    const run = () => {
+      const ac = new AbortController();
+      aborters.current.push(ac);
+      fetchJSON(`${API_BASE_URL}/api/bot-prompts/`, { method: "GET" }, ac.signal)
+        .then((data) => {
+          if (cancelled) return;
+          const loaded = Array.isArray(data) ? data : Array.isArray(data?.prompts) ? data.prompts : null;
+          if (loaded && loaded.length) setPrompts(loaded);
+        })
+        .catch((e) => {
+          if (process.env.NODE_ENV !== "production") {
+            // eslint-disable-next-line no-console
+            console.warn("Failed to load bot prompts:", (e as Error)?.message);
+          }
         });
-        const loaded = Array.isArray(data)
-          ? data
-          : Array.isArray(data?.prompts)
-          ? data.prompts
-          : null;
-        if (loaded && loaded.length) setPrompts(loaded);
-      } catch (e) {
-        console.warn("Failed to load bot prompts:", (e as Error)?.message);
-      }
-    })();
+    };
+
+    if ("requestIdleCallback" in window) {
+      (window as any).requestIdleCallback(run, { timeout: 1500 });
+    } else {
+      // fallback without delaying first paint too much
+      setTimeout(run, 400);
+    }
+
+    return () => {
+      cancelled = true;
+      aborters.current.forEach((a) => a.abort());
+      aborters.current = [];
+    };
   }, []);
 
   // Scroll helpers
   const checkIfAtBottom = useCallback(() => {
-    if (messagesContainerRef.current) {
-      const { scrollTop, scrollHeight, clientHeight } =
-        messagesContainerRef.current;
-      isAtBottomRef.current = scrollTop + clientHeight >= scrollHeight - 10;
-    }
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    const { scrollTop, scrollHeight, clientHeight } = el;
+    isAtBottomRef.current = scrollTop + clientHeight >= scrollHeight - 10;
   }, []);
 
   const scrollToBottom = useCallback(
     (force = false) => {
       if (force || isAtBottomRef.current) {
-        messagesEndRef.current?.scrollIntoView({
-          behavior: reducedMotion ? "auto" : "smooth",
-        });
+        messagesEndRef.current?.scrollIntoView({ behavior: reducedMotion ? "auto" : "smooth" });
       }
     },
     [reducedMotion]
@@ -363,142 +386,148 @@ export function ChatBot() {
 
   useEffect(() => {
     const container = messagesContainerRef.current;
-    if (container) {
-      container.addEventListener("scroll", checkIfAtBottom);
-      return () => container.removeEventListener("scroll", checkIfAtBottom);
-    }
+    if (!container) return;
+    // passive scroll listener for perf
+    container.addEventListener("scroll", checkIfAtBottom, { passive: true });
+    return () => container.removeEventListener("scroll", checkIfAtBottom as EventListener);
   }, [checkIfAtBottom]);
 
   useEffect(() => {
     scrollToBottom();
   }, [messages, scrollToBottom]);
 
+  // focus input when opened
   useEffect(() => {
     if (isOpen) setTimeout(() => inputRef.current?.focus(), 150);
   }, [isOpen]);
 
+  // Greeting animation timers
   useEffect(() => {
-    if (!reducedMotion) {
-      setAnimateIcon(true);
-      setShowHi(true);
-      const hiTimer = setTimeout(() => setShowHi(false), 2600);
-      const animTimer = setTimeout(() => setAnimateIcon(false), 1800);
-      return () => {
-        clearTimeout(hiTimer);
-        clearTimeout(animTimer);
-      };
-    }
+    if (reducedMotion) return;
+    setAnimateIcon(true);
+    setShowHi(true);
+    const hiTimer = setTimeout(() => setShowHi(false), 2600);
+    const animTimer = setTimeout(() => setAnimateIcon(false), 1800);
+    return () => {
+      clearTimeout(hiTimer);
+      clearTimeout(animTimer);
+    };
   }, [reducedMotion]);
 
   // ESC to close
   useEffect(() => {
+    if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && isOpen) setIsOpen(false);
+      if (e.key === "Escape") setIsOpen(false);
     };
-    if (isOpen) {
-      document.addEventListener("keydown", handleKeyDown);
-      return () => document.removeEventListener("keydown", handleKeyDown);
-    }
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
   }, [isOpen]);
 
-  // Helpers
-  const addMessage = (type: "bot" | "user", text: string) => {
-    setMessages((prev) => [
-      ...prev,
-      { id: Date.now() + Math.random(), type, text, time: nowTime() },
-    ]);
-  };
+  // Stable helpers
+  const addMessage = useCallback((type: "bot" | "user", text: string) => {
+    const ts = Date.now();
+    setMessages((prev) => [...prev, { id: `${ts}-${Math.random().toString(36).slice(2, 8)}`, type, text, ts }]);
+  }, []);
 
   // Real API send; clicking button or pressing Enter both call this with text
-  const handleSend = async (raw?: string) => {
-    const text = (raw ?? inputValue).trim();
-    if (!text || isSending) return;
+  const handleSend = useCallback(
+    async (raw?: string) => {
+      const text = (raw ?? inputValue).trim();
+      if (!text || isSending) return;
 
-    addMessage("user", text);
-    setInputValue("");
-    setIsSending(true);
+      addMessage("user", text);
+      setInputValue("");
+      setIsSending(true);
 
-    try {
-      // 1) Send user message (returns/echoes conversation_id)
-      const userData = await fetchJSON(`${API_BASE_URL}/api/user-response/`, {
-        method: "POST",
-        body: JSON.stringify({
-          message: text,
-          conversation_id: conversationId || undefined,
-        }),
-      });
+      const ac1 = new AbortController();
+      const ac2 = new AbortController();
+      aborters.current.push(ac1, ac2);
 
-      const newConvId =
-        userData?.conversation_id ??
-        userData?.data?.conversation_id ??
-        conversationId ??
-        null;
+      try {
+        // 1) Send user message (returns/echoes conversation_id)
+        const userData = await fetchJSON(
+          `${API_BASE_URL}/api/user-response/`,
+          {
+            method: "POST",
+            body: JSON.stringify({ message: text, conversation_id: conversationId || undefined }),
+          },
+          ac1.signal
+        );
 
-      if (newConvId && newConvId !== conversationId)
-        setConversationId(newConvId);
+        const newConvId =
+          userData?.conversation_id ??
+          userData?.data?.conversation_id ??
+          conversationId ??
+          null;
 
-      // 2) Get bot reply (include message to avoid 400s server-side)
-      const botData = await fetchJSON(`${API_BASE_URL}/api/bot-response/`, {
-        method: "POST",
-        body: JSON.stringify({
-          message: text,
-          conversation_id: newConvId || conversationId || undefined,
-        }),
-      });
+        if (newConvId && newConvId !== conversationId) setConversationId(newConvId);
 
-      const botMsg: string =
-        typeof botData?.bot_text === "string"
-          ? botData.bot_text
-          : typeof botData?.message === "string"
-          ? botData.message
-          : typeof botData?.data?.message === "string"
-          ? botData.data.message
-          : "";
+        // 2) Get bot reply (include message to avoid 400s server-side)
+        const botData = await fetchJSON(
+          `${API_BASE_URL}/api/bot-response/`,
+          {
+            method: "POST",
+            body: JSON.stringify({ message: text, conversation_id: newConvId || conversationId || undefined }),
+          },
+          ac2.signal
+        );
 
-      addMessage(
-        "bot",
-        botMsg.trim().length
-          ? botMsg
-          : "Empty bot response. Ensure /api/bot-response/ returns { bot_text: string } or { message: string }."
-      );
-    } catch (err: any) {
-      console.error("Chat API error:", err);
-      addMessage(
-        "bot",
-        `Connection issue: ${
-          err?.message || "Unknown error"
-        }. Check API_BASE_URL and that /api/user-response/ & /api/bot-response/ accept JSON with { message, conversation_id }.`
-      );
-    } finally {
-      setIsSending(false);
-    }
-  };
+        const botMsg: string =
+          typeof botData?.bot_text === "string"
+            ? botData.bot_text
+            : typeof botData?.message === "string"
+            ? botData.message
+            : typeof botData?.data?.message === "string"
+            ? botData.data.message
+            : "";
 
-  const handleInputKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSend(inputValue); // pass the current value explicitly
-    }
-  };
+        addMessage(
+          "bot",
+          botMsg.trim().length
+            ? botMsg
+            : "Empty bot response. Ensure /api/bot-response/ returns { bot_text: string } or { message: string }."
+        );
+      } catch (err: any) {
+        // eslint-disable-next-line no-console
+        console.error("Chat API error:", err);
+        addMessage(
+          "bot",
+          `Connection issue: ${
+            err?.message || "Unknown error"
+          }. Check API_BASE_URL and that /api/user-response/ & /api/bot-response/ accept JSON with { message, conversation_id }.`
+        );
+      } finally {
+        setIsSending(false);
+      }
+    },
+    [inputValue, isSending, addMessage, conversationId]
+  );
 
-  // Group messages by time
-  const groupedMessages = messages.map((msg, index) => {
-    const prevMsg = messages[index - 1];
-    const showTime =
-      !prevMsg ||
-      new Date(`1970-01-01 ${msg.time}`).getTime() -
-        new Date(`1970-01-01 ${prevMsg.time}`).getTime() >
-        300000; // 5 minutes
-    return { ...msg, showTime };
-  });
+  const handleInputKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        handleSend(inputValue);
+      }
+    },
+    [handleSend, inputValue]
+  );
+
+  // Group messages by time (show timestamp if > 5 minutes since previous)
+  const groupedMessages = useMemo(
+    () =>
+      messages.map((msg, index) => {
+        const prev = messages[index - 1];
+        const showTime = !prev || msg.ts - prev.ts > 5 * 60 * 1000;
+        return { ...msg, showTime };
+      }),
+    [messages]
+  );
 
   return (
-    <div
-      style={{
-        fontFamily: "var(--font-poppins), Arial, Helvetica, sans-serif",
-      }}
-    >
-      {/* Launcher — fixed bottom-left (no dragging) */}
+    <div style={{ fontFamily: "var(--font-poppins), Arial, Helvetica, sans-serif" }}>
+      {/* Launcher — fixed bottom-left */}
       <div className="fixed z-50 bottom-6 left-6">
         <div className="relative">
           {showHi && !reducedMotion && (
@@ -510,22 +539,27 @@ export function ChatBot() {
                 "animate-[fadeInOut_2.6s_ease-in-out_forwards]",
                 "left-[5.25rem] bottom-2 origin-bottom-left"
               )}
+              role="status"
+              aria-live="polite"
             >
               <small className="font-light">{hiText}</small>
             </div>
           )}
           <button
+            type="button"
             onClick={() => setIsOpen((v) => !v)}
             className={cls(
               "relative w-16 h-16 rounded-full shadow-xl bg-gradient-to-r from-[#891F1A] to-[#a52a24] text-white",
               "hover:shadow-2xl hover:ring-4 hover:ring-[#891F1A]/20 transition-all duration-300"
             )}
             aria-label={isOpen ? ariaCloseChat : ariaOpenChat}
+            aria-haspopup="dialog"
+            aria-expanded={isOpen}
           >
             {!reducedMotion && animateIcon && (
               <span className="pointer-events-none absolute inset-0 rounded-full ring-8 ring-[#891F1A]/20 animate-ping" />
             )}
-            <MessageCircle className="w-6 h-6 absolute inset-0 m-auto" />
+            <MessageCircle className="w-6 h-6 absolute inset-0 m-auto" aria-hidden="true" />
           </button>
         </div>
       </div>
@@ -545,12 +579,14 @@ export function ChatBot() {
           role="dialog"
           aria-modal="true"
           aria-labelledby="chat-header"
+          aria-describedby="chat-desc"
         >
-          <ChatHeader
-            botName={botName}
-            onClose={() => setIsOpen(false)}
-            ariaCloseLabel={ariaCloseChat}
-          />
+          {/* offscreen description for screen readers */}
+          <p id="chat-desc" className="sr-only">
+            Chat with CreativeAI. Type a message and press Enter to send.
+          </p>
+
+          <ChatHeader botName={botName} onClose={() => setIsOpen(false)} ariaCloseLabel={ariaCloseChat} />
 
           {/* Messages area */}
           <main
@@ -558,18 +594,14 @@ export function ChatBot() {
             className={cls("flex-1 overflow-y-auto", "bg-transparent")}
             aria-live="polite"
             aria-label="Chat messages"
+            aria-busy={isSending || undefined}
           >
             {messages.length === 0 ? (
               <EmptyState />
             ) : (
               <div className="p-5 space-y-4">
                 {groupedMessages.map((m) => (
-                  <MessageBubble
-                    key={m.id}
-                    message={m}
-                    isUser={m.type === "user"}
-                    showTime={m.showTime}
-                  />
+                  <MessageBubble key={m.id} message={m} isUser={m.type === "user"} showTime={(m as any).showTime} />
                 ))}
                 <div ref={messagesEndRef} />
               </div>
@@ -578,24 +610,18 @@ export function ChatBot() {
 
           {/* Footer */}
           <footer
-            className={cls(
-              "bg-white/30 backdrop-blur-xl",
-              "border-t border-white/40 p-5 rounded-b-[28px] md:rounded-b-3xl"
-            )}
+            className={cls("bg-white/30 backdrop-blur-xl", "border-t border-white/40 p-5 rounded-b-[28px] md:rounded-b-3xl")}
           >
-            <PromptChips
-              prompts={prompts}
-              onSelectPrompt={selectPrompt}
-              reducedMotion={reducedMotion}
-            />
+            <PromptChips prompts={prompts} onSelectPrompt={selectPrompt} reducedMotion={reducedMotion} />
             <ChatInput
               value={inputValue}
               onChange={setInputValue}
-              onSend={(val) => handleSend(val)} // click sends the value
+              onSend={handleSend}
               onKeyDown={handleInputKeyDown}
               placeholder={inputPlaceholder}
               inputRef={inputRef}
               reducedMotion={reducedMotion}
+              isSending={isSending}
             />
           </footer>
         </div>

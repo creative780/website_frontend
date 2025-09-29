@@ -1,6 +1,7 @@
+// Front_End/app/admin/testimonialsTable/page.tsx
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { API_BASE_URL } from "../../utils/api";
 
 // Frontend key helper (same contract as main page)
@@ -23,13 +24,13 @@ export default function TestimonialsTablePage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
 
-    const load = async () => {
+    (async () => {
       try {
         const res = await fetch(
-          `${API_BASE_URL}/api/show-testimonials/?all=1`,
-          withFrontendKey({ method: "GET" })
+          `${API_BASE_URL}/api/show-testimonials/?all=1&_=${Date.now()}`,
+          withFrontendKey({ method: "GET", cache: "no-store", signal: controller.signal })
         );
         if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
         const data = await res.json();
@@ -44,36 +45,35 @@ export default function TestimonialsTablePage() {
         const mapped: Row[] = list.map((t: any) => ({
           name: t.name ?? "",
           role: t.role ?? "",
-          // Prefer explicit fields if present; otherwise fall back
           date: t.date ?? t.created_at ?? t.updated_at ?? "",
           status: t.status ?? (t.published ? "Published" : "Draft"),
         }));
 
-        if (!cancelled) setRows(mapped);
-      } catch (e: any) {
-        if (!cancelled) {
-          setError("Failed to load testimonials.");
-          setRows([]);
-        }
-      }
-    };
+        // Sort newest first by parsed date fallback
+        mapped.sort((a, b) => (parseWhenPossible(b.date) - parseWhenPossible(a.date)));
 
-    load();
-    return () => {
-      cancelled = true;
-    };
+        setRows(mapped);
+        setError(null);
+      } catch (e: any) {
+        if (e?.name === "AbortError") return;
+        setError("Failed to load testimonials.");
+        setRows([]);
+      }
+    })();
+
+    return () => controller.abort();
   }, []);
 
-  // Keep UI structure identical; only the data source changed
+  const content = useMemo(() => rows, [rows]);
+
   return (
-    <div className="overflow-auto rounded-2xl shadow-lg border border-gray-200 max-h-[500px]">
+    <div className="overflow-auto rounded-2xl shadow-lg border border-gray-200 max-h-[500px] bg-white">
       <div className="bg-white p-4 border-b border-gray-200">
-        <h2 className="text-xl font-semibold text-[#891F1A]">
-          Uploaded Testimonials
-        </h2>
+        <h2 className="text-xl font-semibold text-[#891F1A]">Uploaded Testimonials</h2>
       </div>
+
       <div className="overflow-x-auto">
-        <table className="w-full table-auto text-sm bg-white">
+        <table className="w-full table-auto text-sm">
           <thead className="text-white bg-[#891F1A] sticky top-0 z-10">
             <tr>
               <th className="p-3 text-left">Customer</th>
@@ -82,9 +82,9 @@ export default function TestimonialsTablePage() {
               <th className="p-3 text-center">Status</th>
             </tr>
           </thead>
+
           <tbody className="text-gray-700 divide-y divide-gray-100">
-            {/* Loading state (single row) */}
-            {rows === null && (
+            {content === null && (
               <tr>
                 <td className="p-3 text-center" colSpan={4}>
                   Loading…
@@ -92,31 +92,21 @@ export default function TestimonialsTablePage() {
               </tr>
             )}
 
-            {/* Error state (single row) */}
-            {rows !== null && rows.length === 0 && error && (
+            {content !== null && content.length === 0 && (
               <tr>
                 <td className="p-3 text-center" colSpan={4}>
-                  {error}
+                  {error || "No testimonials found."}
                 </td>
               </tr>
             )}
 
-            {/* Data rows */}
-            {rows?.map((item, idx) => (
+            {content?.map((item, idx) => (
               <tr className="hover:bg-gray-50 transition" key={idx}>
                 <td className="p-3">{item.name || "-"}</td>
                 <td className="p-3">{item.role || "-"}</td>
+                <td className="p-3 text-center">{formatDate(item.date) || "-"}</td>
                 <td className="p-3 text-center">
-                  {formatDate(item.date) || "-"}
-                </td>
-                <td
-                  className={`p-3 text-center ${
-                    (item.status || "").toLowerCase() === "published"
-                      ? "text-green-600"
-                      : "text-yellow-600"
-                  }`}
-                >
-                  {item.status || "Draft"}
+                  <StatusBadge status={item.status} />
                 </td>
               </tr>
             ))}
@@ -127,12 +117,35 @@ export default function TestimonialsTablePage() {
   );
 }
 
-// Basic date prettifier (keeps UI unchanged, just nicer text if ISO provided)
+/* Helpers */
+
+function parseWhenPossible(raw?: string): number {
+  if (!raw) return 0;
+  const t = Date.parse(raw);
+  return Number.isNaN(t) ? 0 : t;
+}
+
 function formatDate(raw?: string) {
   if (!raw) return "";
-  // If it's already a friendly date, just show it
-  if (!/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw;
-  const d = new Date(raw);
-  if (isNaN(d.getTime())) return raw;
-  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+  const t = Date.parse(raw);
+  if (Number.isNaN(t)) return raw; // already a friendly string
+  const d = new Date(t);
+  try {
+    return new Intl.DateTimeFormat(undefined, { year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
+  } catch {
+    return d.toISOString().slice(0, 10);
+  }
+}
+
+function StatusBadge({ status }: { status?: string }) {
+  const v = (status || "Draft").toLowerCase();
+  const isPub = v === "published";
+  const cls = isPub
+    ? "bg-green-100 text-green-700 border-green-200"
+    : "bg-yellow-100 text-yellow-700 border-yellow-200";
+  return (
+    <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold border ${cls}`}>
+      {isPub ? "Published" : "Draft"}
+    </span>
+  );
 }

@@ -1,37 +1,35 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Minus, Plus, Trash2 } from 'lucide-react';
 import Toastify from 'toastify-js';
 import 'toastify-js/src/toastify.css';
 
-import Header from '../components/header';
-import LogoSection from '../components/LogoSection';
 import MobileTopBar from '../components/HomePageTop';
 import Footer from '../components/Footer';
 import { API_BASE_URL } from '../utils/api';
 import { ChatBot } from '../components/ChatBot';
 import { SafeImg } from '../components/SafeImage';
-import Navbar from '../components/Navbar';
 
 /* 🔐 Firebase auth hook-in */
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth } from '../lib/firebase';
 import TempHeader from '../components/TempHeader';
+import Script from 'next/script';
 
 /* =========================================================
-   ALL HELPERS IN THIS ONE FILE (no extra files)
+   HELPERS (kept local to this file)
    ========================================================= */
 
-// Single source of truth for the browser-stable device UUID
+// Browser-stable device UUID
 function ensureDeviceUUID(): string {
   if (typeof window === 'undefined') return ''; // SSR guard
   const KEY = 'cart_user_id';
   let id = localStorage.getItem(KEY)?.trim();
   if (id) return id;
 
-  // RFC4122-ish v4 (good enough for a device-scoped ID)
+  // RFC4122-ish v4 (device-scoped)
   id = ([1e7] as any + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (c: string) =>
     (Number(c) ^ ((crypto.getRandomValues(new Uint8Array(1))[0] & 15) >> (Number(c) / 4))).toString(16)
   );
@@ -44,7 +42,7 @@ function ensureDeviceUUID(): string {
 const FRONTEND_KEY = (process.env.NEXT_PUBLIC_FRONTEND_KEY || '').trim();
 function fetchWithKey(url: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers || {});
-  headers.set('X-Frontend-Key', FRONTEND_KEY);
+  if (FRONTEND_KEY) headers.set('X-Frontend-Key', FRONTEND_KEY);
   try {
     const deviceUUID = ensureDeviceUUID();
     if (deviceUUID) headers.set('X-Device-UUID', deviceUUID);
@@ -52,8 +50,7 @@ function fetchWithKey(url: string, init: RequestInit = {}) {
   return fetch(url, { ...init, headers });
 }
 
-// Reusable Add-to-Cart util (kept in this file as requested)
-// ⚠️ IMPORTANT: Do NOT export from a page file. Keep it internal.
+// Reusable Add-to-Cart util (kept internal)
 async function addToCart(opts: {
   product_id: string;
   quantity?: number;
@@ -110,7 +107,7 @@ export default function PaymentCheckoutPage() {
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [customPrices, setCustomPrices] = useState<Record<string, number>>({});
 
-  // extra metadata we’ll pass to the order payload (not shown in UI)
+  // extra metadata passed to order payload (not shown in UI)
   const [cartMeta, setCartMeta] = useState<
     Record<
       string,
@@ -171,6 +168,7 @@ export default function PaymentCheckoutPage() {
         position: 'right',
         backgroundColor: '#d32f2f',
         style: { borderRadius: '0.75rem', padding: '12px 20px' },
+        ariaLive: 'polite',
       }).showToast();
       router.replace('/home'); // you can use /home?login=1 to auto-open modal
     }
@@ -193,18 +191,23 @@ export default function PaymentCheckoutPage() {
       return;
     }
 
+    const controller = new AbortController();
+
     const fetchCart = async () => {
       try {
         setLoading(true);
 
         const res = await fetchWithKey(`${API_BASE_URL}/api/show-cart/`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ device_uuid: deviceUUID }),
           cache: 'no-store',
+          signal: controller.signal,
         });
+
+        if (!res.ok) {
+          throw new Error(`Cart fetch failed: ${res.status}`);
+        }
 
         const data = await res.json();
         const items = data?.cart_items || [];
@@ -253,11 +256,8 @@ export default function PaymentCheckoutPage() {
           // Stash metadata used later
           const basePriceNum = parseFloat(item?.price_breakdown?.base_price ?? '0') || 0;
           const lineTotalNum = parseFloat(item?.price_breakdown?.line_total ?? '0') || 0;
-          const attrsDeltaNum = parseFloat(
-            item?.price_breakdown?.attributes_delta ??
-            item?.attributes_price_delta ??
-            '0'
-          ) || 0;
+          const attrsDeltaNum =
+            parseFloat(item?.price_breakdown?.attributes_delta ?? item?.attributes_price_delta ?? '0') || 0;
 
           meta[rowId] = {
             cart_item_id: cartItemId,
@@ -285,25 +285,32 @@ export default function PaymentCheckoutPage() {
     };
 
     fetchCart();
+    return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthed]);
 
-  const subtotal = cartData.products.reduce(
-    (acc, [rowId]) => acc + (quantities[rowId] || 1) * (customPrices[rowId] || 0),
-    0
+  /* ---------- Pricing ---------- */
+  const subtotal = useMemo(
+    () =>
+      cartData.products.reduce(
+        (acc, [rowId]) => acc + (quantities[rowId] || 1) * (customPrices[rowId] || 0),
+        0
+      ),
+    [cartData.products, quantities, customPrices]
   );
   const tax = 50;
   const shipping = 100;
-  const total = subtotal + tax + shipping;
+  const total = useMemo(() => subtotal + tax + shipping, [subtotal]);
 
-  const updateQuantity = (rowId: string, delta: number) => {
+  /* ---------- Quantity / Remove ---------- */
+  const updateQuantity = useCallback((rowId: string, delta: number) => {
     setQuantities((prev) => ({
       ...prev,
-      [rowId]: Math.max(1, (prev[rowId] || 1) + delta),
+      [rowId]: Math.max(1, Math.min(99, (prev[rowId] || 1) + delta)),
     }));
-  };
+  }, []);
 
-  const removeItem = async (rowId: string) => {
+  const removeItem = useCallback(async (rowId: string) => {
     const meta = cartMeta[rowId];
     const realProductId = meta?.product_id || rowId;
 
@@ -346,6 +353,7 @@ export default function PaymentCheckoutPage() {
         position: 'right',
         backgroundColor: 'linear-gradient(to right, #af4c4cff, #d30000ff)',
         style: { borderRadius: '0.75rem', padding: '12px 20px' },
+        ariaLive: 'polite',
       }).showToast();
     } catch {
       Toastify({
@@ -355,35 +363,40 @@ export default function PaymentCheckoutPage() {
         position: 'right',
         backgroundColor: '#d32f2f',
         style: { borderRadius: '0.75rem', padding: '12px 20px' },
+        ariaLive: 'assertive',
       }).showToast();
     }
-  };
+  }, [API_BASE_URL, cartMeta, token]);
 
+  /* ---------- Place Order ---------- */
   const handleOrderNow = async () => {
     const device_uuid = ensureDeviceUUID();
 
-    let msgLines: string[] = [
-      `Name: ${userInfo.name || 'N/A'}`,
-      `Email: ${userInfo.email || 'N/A'}`,
-      `Phone: ${userInfo.phone || 'N/A'}`,
+    if (!userInfo.email || !userInfo.address || !userInfo.city || !userInfo.phone || !userInfo.name) {
+      Toastify({
+        text: 'Please fill in all required delivery fields',
+        duration: 3000,
+        gravity: 'top',
+        position: 'right',
+        backgroundColor: '#d32f2f',
+        style: { borderRadius: '0.75rem', padding: '12px 20px' },
+        ariaLive: 'assertive',
+      }).showToast();
+      return;
+    }
+
+    const msgLines: string[] = [
+      `Name: ${userInfo.name}`,
+      `Email: ${userInfo.email}`,
+      `Phone: ${userInfo.phone}`,
       `Company: ${userInfo.company || 'N/A'}`,
-      `Address: ${userInfo.address || 'N/A'}`,
-      `City: ${userInfo.city || 'N/A'}`,
+      `Address: ${userInfo.address}`,
+      `City: ${userInfo.city}`,
       `Zip: ${userInfo.zip || 'N/A'}`,
       `Instructions: ${userInfo.instructions || 'N/A'}`,
       ``,
       `Order:`,
     ];
-
-    if (!userInfo.email || !userInfo.address || !userInfo.city || !userInfo.phone) {
-      Toastify({
-        text: 'Please fill in all required delivery fields',
-        duration: 3000,
-        backgroundColor: '#d32f2f',
-        style: { borderRadius: '0.75rem', padding: '12px 20px' },
-      }).showToast();
-      return;
-    }
 
     const itemsForBackend: any[] = [];
 
@@ -425,10 +438,10 @@ export default function PaymentCheckoutPage() {
 
     msgLines.push(
       ``,
-      `Subtotal: $${subtotal.toFixed(2)}`,
-      `Tax: $${tax}`,
-      `Shipping: $${shipping}`,
-      `Total: $${total.toFixed(2)}`
+      `Subtotal: AED ${subtotal.toFixed(2)}`,
+      `Tax: AED ${tax}`,
+      `Shipping: AED ${shipping}`,
+      `Total: AED ${total.toFixed(2)}`
     );
 
     const payload = {
@@ -461,8 +474,11 @@ export default function PaymentCheckoutPage() {
       Toastify({
         text: 'Order successfully placed!',
         duration: 3000,
+        gravity: 'top',
+        position: 'right',
         backgroundColor: '#c41717ff',
         style: { borderRadius: '0.75rem', padding: '12px 20px' },
+        ariaLive: 'polite',
       }).showToast();
 
       // After order: attempt to clean cart items
@@ -490,14 +506,18 @@ export default function PaymentCheckoutPage() {
       setCustomPrices({});
 
       const msg = msgLines.join('\n');
-      window.open(`https://wa.me/971545396249?text=${encodeURIComponent(msg)}`, '_blank');
+      // open WhatsApp intent in a safe way
+      window.open(`https://wa.me/971545396249?text=${encodeURIComponent(msg)}`, '_blank', 'noopener,noreferrer');
     } catch (err) {
       console.error('❌ Order save failed:', err);
       Toastify({
         text: 'Failed to place order',
         duration: 3000,
+        gravity: 'top',
+        position: 'right',
         backgroundColor: '#d32f2f',
         style: { borderRadius: '0.75rem', padding: '12px 20px' },
+        ariaLive: 'assertive',
       }).showToast();
     }
   };
@@ -517,6 +537,8 @@ export default function PaymentCheckoutPage() {
       <div
         className="min-h-screen flex items-center justify-center text-xl text-gray-600"
         style={{ fontFamily: 'var(--font-poppins), Arial, Helvetica, sans-serif' }}
+        role="status"
+        aria-live="polite"
       >
         {isAuthed === null ? 'Checking sign-in…' : 'Loading your cart...'}
       </div>
@@ -526,138 +548,178 @@ export default function PaymentCheckoutPage() {
   // Safety: if not authed, we already redirected; render nothing
   if (isAuthed === false) return null;
 
+  // SEO hygiene for checkout: discourage indexing
+  const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || '';
+  const breadcrumbLd = {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Home', item: `${siteUrl}/` },
+      { '@type': 'ListItem', position: 2, name: 'Checkout', item: `${siteUrl}/checkout2` },
+    ],
+  };
+
   return (
     <div
       className="min-h-screen bg-gray-50 text-black text-[3.5vw] sm:text-base"
       style={{ fontFamily: 'var(--font-poppins), Arial, Helvetica, sans-serif' }}
     >
+      {/* Robots noindex/nofollow (since this is a transactional page) */}
+      <Script id="robots-checkout" strategy="afterInteractive">{`(function(){var m=document.createElement('meta');m.name='robots';m.content='noindex,nofollow';document.head.appendChild(m);document.title='Checkout';})();`}</Script>
+      <Script
+        id="breadcrumb-jsonld"
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd) }}
+      />
+
       <TempHeader />
       <MobileTopBar />
-      <div className="max-w-7xl mx-auto py-12 px-4 sm:px-6 lg:px-8 grid grid-cols-1 lg:grid-cols-2 gap-8">
+
+      <main
+        className="max-w-7xl mx-auto py-12 px-4 sm:px-6 lg:px-8 grid grid-cols-1 lg:grid-cols-2 gap-8"
+        aria-labelledby="checkout-heading"
+      >
+        <h1 id="checkout-heading" className="sr-only">Checkout</h1>
+
         {/* Delivery Section */}
-        <section className="bg-white shadow rounded-lg p-8">
-          {/* h2 → Semi Bold (600) */}
-          <h2 className="text-2xl font-semibold mb-6 text-black">Delivery Address</h2>
+        <section className="bg-white shadow rounded-lg p-8" aria-labelledby="delivery-heading">
+          <h2 id="delivery-heading" className="text-2xl font-semibold mb-6 text-black">Delivery Address</h2>
 
           <div className="space-y-4 text-black">
             {[
-              { label: 'Full Name', key: 'name' },
-              { label: 'Email Address', key: 'email' },
-              { label: 'Phone', key: 'phone' },
-              { label: 'Company', key: 'company' },
-              { label: 'Street Address', key: 'address' },
-              { label: 'City', key: 'city' },
-              { label: 'Zip', key: 'zip' },
-              { label: 'Instructions', key: 'instructions' }
-            ].map(({ label, key }) => (
-              <div
-                key={key}
-                className={['phone', 'company', 'city', 'zip', 'instructions'].includes(key) ? 'w-full sm:w-1/2' : ''}
-              >
-                {/* label → Regular (400) */}
-                <label className="text-sm font-normal">{label}</label>
-                <input
-                  type="text"
-                  onChange={(e) => setUserInfo((prev) => ({ ...prev, [key]: e.target.value }))}
-                  className="mt-1 w-full p-2 border border-gray-300 rounded-md bg-gray-50"
-                  inputMode={key === 'zip' || key === 'phone' ? 'numeric' : 'text'}
-                />
-              </div>
-            ))}
+              { label: 'Full Name', key: 'name', type: 'text', autoComplete: 'name', required: true },
+              { label: 'Email Address', key: 'email', type: 'email', autoComplete: 'email', required: true },
+              { label: 'Phone', key: 'phone', type: 'tel', autoComplete: 'tel', required: true, inputMode: 'tel', pattern: '[0-9 +()-]+' },
+              { label: 'Company', key: 'company', type: 'text', autoComplete: 'organization' },
+              { label: 'Street Address', key: 'address', type: 'text', autoComplete: 'street-address', required: true },
+              { label: 'City', key: 'city', type: 'text', autoComplete: 'address-level2', required: true },
+              { label: 'Zip', key: 'zip', type: 'text', autoComplete: 'postal-code', inputMode: 'numeric' },
+              { label: 'Instructions', key: 'instructions', type: 'text', autoComplete: 'off' },
+            ].map(({ label, key, type, autoComplete, required, inputMode, pattern }) => {
+              const id = `field-${key}`;
+              const half = ['phone', 'company', 'city', 'zip', 'instructions'].includes(key);
+              return (
+                <div key={key} className={half ? 'w-full sm:w-1/2' : ''}>
+                  <label htmlFor={id} className="text-sm font-normal block">
+                    {label}{required ? <span className="text-red-600"> *</span> : null}
+                  </label>
+                  <input
+                    id={id}
+                    type={type as any}
+                    required={!!required}
+                    onChange={(e) => setUserInfo((prev) => ({ ...prev, [key]: e.target.value }))}
+                    className="mt-1 w-full p-2 border border-gray-300 rounded-md bg-gray-50"
+                    autoComplete={autoComplete as any}
+                    inputMode={inputMode as any}
+                    pattern={pattern as any}
+                  />
+                </div>
+              );
+            })}
           </div>
 
-          {/* button → Medium (500) */}
           <button
             onClick={handleOrderNow}
             disabled={cartData.products.length === 0}
             className={`w-full mt-8 py-3 text-sm font-medium rounded-md transition-all
-              ${cartData.products.length === 0 
-                ? 'bg-gray-300 text-gray-600 cursor-not-allowed' 
-                : 'bg-[#891F1A] text-white hover:bg-[#6e1815]'}`}
+              ${cartData.products.length === 0
+                ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
+                : 'bg-[#891F1A] text-white hover:bg-[#6e1815] focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400'}`}
+            aria-disabled={cartData.products.length === 0}
+            aria-label="Place order"
           >
             Order Now
           </button>
         </section>
 
         {/* Order Summary */}
-        <section className="bg-white shadow rounded-lg p-8">
-          {/* h2 → Semi Bold (600) */}
-          <h2 className="text-2xl font-semibold mb-6 text-black">Order</h2>
+        <section className="bg-white shadow rounded-lg p-8" aria-labelledby="order-heading">
+          <h2 id="order-heading" className="text-2xl font-semibold mb-6 text-black">Order</h2>
 
-          <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
-            {orderItems.map((item) => (
-              <article
-                key={item.id}
-                className="flex flex-wrap sm:flex-nowrap items-center justify-between border p-3 rounded-md bg-gray-50 text-black"
-              >
-                <SafeImg
-                  src={item.pic || '/images/default.jpg'}
-                  alt={item.name}
-                  width={56}
-                  height={56}
-                  loading="lazy"
-                  className="w-14 h-14 object-cover rounded flex-shrink-0"
-                  onError={(e) => (e.currentTarget.src = '/images/img1.jpg')}
-                />
-                <div className="flex-1 ml-4 text-sm min-w-[160px]">
-                  {/* h4 → Medium (500) */}
-                  <h4 className="font-medium line-clamp-1">{item.name}</h4>
-                  {/* p → Regular (400) */}
-                  {item.desc ? (
-                    <p className="text-xs text-gray-600 mt-0.5 font-normal">{item.desc}</p>
-                  ) : null}
-                </div>
+          <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2" aria-live="polite">
+            {orderItems.length === 0 ? (
+              <p className="text-sm text-gray-600">Your cart is empty.</p>
+            ) : (
+              orderItems.map((item) => (
+                <article
+                  key={item.id}
+                  className="flex flex-wrap sm:flex-nowrap items-center justify-between border p-3 rounded-md bg-gray-50 text-black"
+                  aria-label={`${item.name}, quantity ${item.quantity}`}
+                >
+                  <SafeImg
+                    src={item.pic || '/images/default.jpg'}
+                    alt={item.name}
+                    width={56}
+                    height={56}
+                    loading="lazy"
+                    className="w-14 h-14 object-cover rounded flex-shrink-0"
+                    onError={(e) => (e.currentTarget.src = '/images/img1.jpg')}
+                  />
+                  <div className="flex-1 ml-4 text-sm min-w-[160px]">
+                    <h3 className="font-medium line-clamp-1">{item.name}</h3>
+                    {item.desc ? (
+                      <p className="text-xs text-gray-600 mt-0.5 font-normal">{item.desc}</p>
+                    ) : null}
+                  </div>
 
-                <div className="flex items-center space-x-1 my-2 sm:my-0">
-                  {/* buttons → Medium (500) */}
-                  <button
-                    onClick={() => updateQuantity(item.id, -1)}
-                    className="border w-8 h-8 flex items-center justify-center rounded font-medium"
-                    aria-label="Decrease quantity"
-                  >
-                    <Minus size={15} />
-                  </button>
-                  {/* span → Regular (400) */}
-                  <span className="font-normal">{item.quantity}</span>
-                  <button
-                    onClick={() => updateQuantity(item.id, 1)}
-                    className="border w-8 h-8 flex items-center justify-center rounded font-medium"
-                  >
-                    <Plus size={15} />
-                  </button>
-                </div>
+                  <div className="flex items-center space-x-1 my-2 sm:my-0" aria-label="Quantity controls">
+                    <button
+                      onClick={() => updateQuantity(item.id, -1)}
+                      className="border w-8 h-8 flex items-center justify-center rounded font-medium"
+                      aria-label="Decrease quantity"
+                    >
+                      <Minus size={15} />
+                    </button>
+                    <span className="font-normal" aria-live="polite">{item.quantity}</span>
+                    <button
+                      onClick={() => updateQuantity(item.id, 1)}
+                      className="border w-8 h-8 flex items-center justify-center rounded font-medium"
+                      aria-label="Increase quantity"
+                    >
+                      <Plus size={15} />
+                    </button>
+                  </div>
 
-                <div className="flex flex-col items-end ml-4 space-y-1">
-                  {/* Remove line button → Medium (500) is fine */}
-                  <button onClick={() => removeItem(item.id)} className="font-medium" aria-label="Remove item">
-                    <Trash2 size={14} className="text-red-600" />
-                  </button>
-                </div>
-              </article>
-            ))}
+                  <div className="flex flex-col items-end ml-4 space-y-1">
+                    <button
+                      onClick={() => removeItem(item.id)}
+                      className="font-medium"
+                      aria-label={`Remove ${item.name}`}
+                    >
+                      <Trash2 size={14} className="text-red-600" />
+                    </button>
+                  </div>
+                </article>
+              ))
+            )}
           </div>
 
           {/* Discount */}
           <div className="mt-6">
-            {/* label → Regular (400) */}
-            <label className="text-sm font-normal text-black mb-1 block">Discount Code</label>
+            <label htmlFor="discount" className="text-sm font-normal text-black mb-1 block">Discount Code</label>
             <div className="flex flex-col sm:flex-row gap-2">
               <input
+                id="discount"
                 type="text"
                 value={discountCode}
                 onChange={(e) => setDiscountCode(e.target.value)}
                 className="flex-1 px-2 py-2 border border-gray-300 rounded-md"
+                placeholder="Enter code"
+                autoComplete="off"
               />
-              {/* button → Medium (500) */}
               <button
                 onClick={() =>
                   Toastify({
                     text: 'Invalid discount code',
                     duration: 3000,
+                    gravity: 'top',
+                    position: 'right',
                     backgroundColor: '#d32f2f',
+                    ariaLive: 'polite',
                   }).showToast()
                 }
-                className="px-4 py-2 border border-gray-300 rounded-md font-medium"
+                disabled={!discountCode.trim()}
+                className="px-4 py-2 border border-gray-300 rounded-md font-medium disabled:opacity-50"
               >
                 Apply
               </button>
@@ -668,24 +730,23 @@ export default function PaymentCheckoutPage() {
           <div className="mt-6 border-t pt-4 space-y-2 text-black">
             <div className="flex justify-between text-sm">
               <span className="font-normal">Subtotal</span>
-              <span className="font-normal">AED: {subtotal.toFixed(2)}</span>
+              <span className="font-normal">AED {subtotal.toFixed(2)}</span>
             </div>
             <div className="flex justify-between text-sm">
               <span className="font-normal">Tax</span>
-              <span className="font-normal">AED: {tax}</span>
+              <span className="font-normal">AED {tax.toFixed(2)}</span>
             </div>
             <div className="flex justify-between text-sm">
               <span className="font-normal">Shipping</span>
-              <span className="font-normal">AED: {shipping}</span>
+              <span className="font-normal">AED {shipping.toFixed(2)}</span>
             </div>
             <div className="flex justify-between pt-2 border-t">
-              {/* strong → Bold (700) */}
               <strong className="text-lg">Total</strong>
-              <strong className="text-lg">AED: {total.toFixed(2)}</strong>
+              <strong className="text-lg">AED {total.toFixed(2)}</strong>
             </div>
           </div>
         </section>
-      </div>
+      </main>
 
       <Footer />
       <ChatBot />

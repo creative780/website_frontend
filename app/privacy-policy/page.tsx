@@ -1,66 +1,102 @@
-"use client";
+// Server Component for better performance & SEO (no client-side JS needed on this page)
+// If any imported component is a Client Component, Next.js will split it automatically.
 
-import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import Footer from "../components/Footer";
 import { SafeImg } from "../components/SafeImage";
 import TempHeader from "../components/TempHeader";
 import MobileTopBar from "../components/HomePageTop";
+import type { Metadata } from "next";
+
+// ---- SEO Metadata (improves Lighthouse SEO + best practices)
+export const metadata: Metadata = {
+  title: "Privacy Policy | Creative Connect Advertising LLC",
+  description:
+    "Learn how Creative Connect Advertising LLC collects, uses, and protects your personal information across our website, ads, and communication channels.",
+  alternates: {
+    canonical: "/privacy-policy",
+  },
+  openGraph: {
+    title: "Privacy Policy | Creative Connect Advertising LLC",
+    description:
+      "How we collect, use, store, and protect your data. Your privacy matters at Creative Connect.",
+    url: "/privacy-policy",
+    siteName: "Creative Connect",
+    type: "article",
+  },
+  robots: {
+    index: true,
+    follow: true,
+  },
+};
+
+// Optional: cache the static policy page for a day (reduces TTFB without losing freshness)
+export const revalidate = 86400;
 
 export default function PrivacyPolicy() {
-  const router = useRouter();
-
-  // --- Minimal local state so the header renders safely without your global auth/modal context
-  const [user, setUser] = useState<null | { name?: string }>(null);
-  const [pseudoLoggedIn] = useState<boolean>(false);
-  const [username] = useState<string>("");
-  const [pseudoName] = useState<string>("");
-
-  const [userMenuOpen, setUserMenuOpen] = useState(false);
-  const userMenuRef = useRef<HTMLDivElement | null>(null);
-
-  // Fallbacks if your global modal system isn't available on this page
-  const openModal = (key: "signin") => {
-    // Replace with your modal trigger if present
-    if (key === "signin") router.push("/login");
+  // Structured data for richer SERP (Organization + WebPage)
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "WebPage",
+    name: "Privacy Policy",
+    url: "https://creativeprints.ae/privacy-policy",
+    description:
+      "Creative Connect Advertising LLC privacy policy describing collection, processing, and protection of personal data.",
+    isPartOf: {
+      "@type": "WebSite",
+      name: "Creative Connect",
+      url: "https://creativeprints.ae",
+    },
+    publisher: {
+      "@type": "Organization",
+      name: "Creative Connect Advertising LLC",
+      url: "https://creativeprints.ae",
+      contactPoint: {
+        "@type": "ContactPoint",
+        contactType: "customer support",
+        email: "info@creativeprints.ae",
+        telephone: "+97143259806",
+        areaServed: "AE",
+        availableLanguage: ["en"],
+      },
+    },
   };
-  const handleLogout = async () => {
-    // Wire to your real logout
-    setUser(null);
-    setUserMenuOpen(false);
-    router.refresh();
-  };
-
-  // Close user menu on outside click
-  useEffect(() => {
-    function onDocClick(e: MouseEvent) {
-      if (userMenuRef.current && !userMenuRef.current.contains(e.target as Node)) {
-        setUserMenuOpen(false);
-      }
-    }
-    if (userMenuOpen) document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [userMenuOpen]);
 
   return (
     <>
-      <TempHeader />
-      <MobileTopBar />
+      {/* Skip link for keyboard users — boosts Accessibility */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:rounded focus:bg-white focus:px-3 focus:py-2 focus:text-black"
+      >
+        Skip to main content
+      </a>
 
-      {/* ====== Banner ====== */}
+      <header role="banner" aria-label="Site header">
+        <TempHeader />
+        <MobileTopBar />
+      </header>
+
+      {/* ====== Banner (decorative) ====== */}
       <SafeImg
         height="250"
         src="/images/Banner3.jpg"
-        alt="Banner Image"
+        alt="" // decorative image: empty alt improves screen-reader experience
+        role="img"
+        aria-hidden="true"
         className="block bg-[#D9D9D9] w-full h-auto mx-auto"
       />
 
       {/* ====== Page Shell ====== */}
-      <main className="bg-white text-black" style={{ fontFamily: "var(--font-poppins), Arial, Helvetica, sans-serif" }}>
-        {/* Giant Title */}
-        <section className="max-w-7xl mx-auto px-6 pt-10 sm:pt-14">
+      <main
+        id="main-content"
+        className="bg-white text-black"
+        style={{ fontFamily: "var(--font-poppins), Arial, Helvetica, sans-serif" }}
+      >
+        {/* Page title & intro */}
+        <section className="max-w-7xl mx-auto px-6 pt-10 sm:pt-14" aria-labelledby="page-title">
           <h1
+            id="page-title"
             className="uppercase font-extrabold leading-[0.85] tracking-[-0.04em]
                        text-[14vw] sm:text-[12vw] md:text-[9vw] lg:text-[7.5vw]"
           >
@@ -72,24 +108,26 @@ export default function PrivacyPolicy() {
           {/* Top Row: Left CTA + Intro Block */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 mt-8 items-start">
             {/* Left Pill CTA */}
-            <aside className="lg:col-span-3">
-              <a
+            <aside className="lg:col-span-3" aria-label="Related links">
+              <Link
                 href="/terms-of-use"
+                prefetch
                 className="inline-flex items-center justify-between w-full sm:w-auto
-                           rounded-full px-6 py-3 bg-[#EEF2FF] hover:bg-[#E7ECFF]
+                           rounded-full px-6 py-3 bg-[#EEF2FF] hover:bg-[#E7ECFF] focus:outline-none focus-visible:ring
                            text-gray-700 text-sm font-semibold transition-all"
+                aria-label="Read our Terms of Use"
               >
                 <span className="mr-3">TERMS OF USE</span>
-                <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
                   <path d="M7.05 3.94a1 1 0 011.4-1.42l6.6 6.5a1 1 0 010 1.44l-6.6 6.5a1 1 0 11-1.4-1.42L12.88 10 7.05 3.94z" />
                 </svg>
-              </a>
+              </Link>
             </aside>
 
             {/* Intro Copy */}
             <div className="lg:col-span-9 grid grid-cols-1 md:grid-cols-12 gap-6">
               <div className="md:col-span-4">
-                <p className="text-xs tracking-widest text-gray-400 uppercase">
+                <p className="text-xs tracking-widest text-gray-500 uppercase">
                   Welcome to Creative Connect
                 </p>
               </div>
@@ -106,6 +144,24 @@ export default function PrivacyPolicy() {
           <hr className="mt-10 border-gray-200" />
         </section>
 
+        {/* Breadcrumbs — enhances SEO & a11y */}
+        <nav
+          className="max-w-7xl mx-auto px-6 mt-4"
+          aria-label="Breadcrumb"
+        >
+          <ol className="flex flex-wrap items-center gap-2 text-sm text-gray-600">
+            <li>
+              <Link href="/" className="underline hover:no-underline focus:outline-none focus-visible:ring">
+                Home
+              </Link>
+            </li>
+            <li aria-hidden="true">/</li>
+            <li aria-current="page" className="text-gray-800">
+              Privacy Policy
+            </li>
+          </ol>
+        </nav>
+
         {/* Body Content – 2-Column Grid */}
         <section className="max-w-7xl mx-auto px-6 pb-16">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-10 gap-y-12 mt-8 text-[15px] leading-7">
@@ -121,12 +177,14 @@ export default function PrivacyPolicy() {
                 <br />
                 <a
                   href="https://creativeprints.ae"
-                  className="underline decoration-[#891F1A] hover:text-[#891F1A]"
+                  className="underline decoration-[#891F1A] hover:text-[#891F1A] focus:outline-none focus-visible:ring"
+                  target="_blank"
+                  rel="noopener noreferrer"
                 >
                   https://creativeprints.ae
                 </a>
                 <br />
-                Email: info@creativeprints.ae
+                Email: <a href="mailto:info@creativeprints.ae" className="underline decoration-[#891F1A]">info@creativeprints.ae</a>
                 <br />
                 Phone: +97143259806
               </p>
@@ -293,12 +351,17 @@ export default function PrivacyPolicy() {
               <p>
                 Creative Connect Advertising
                 <br />
-                📧 Email: info@creativeprints.ae
+                📧 Email: <a href="mailto:info@creativeprints.ae" className="underline decoration-[#891F1A]">info@creativeprints.ae</a>
                 <br />
                 📞 Phone: +97143259806
                 <br />
                 🌐 Website:{" "}
-                <a href="https://creativeprints.ae" className="underline decoration-[#891F1A]">
+                <a
+                  href="https://creativeprints.ae"
+                  className="underline decoration-[#891F1A]"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
                   https://creativeprints.ae
                 </a>
               </p>
@@ -306,6 +369,13 @@ export default function PrivacyPolicy() {
           </div>
         </section>
       </main>
+
+      {/* JSON-LD for SEO */}
+      <script
+        type="application/ld+json"
+        // eslint-disable-next-line react/no-danger
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+      />
 
       <Footer />
     </>

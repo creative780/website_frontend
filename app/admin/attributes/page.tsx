@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useLayoutEffect } from "react";
 import dynamic from "next/dynamic";
 import AdminAuthGuard from "../components/AdminAuthGaurd";
 import AdminSidebar from "../components/AdminSideBar";
@@ -14,10 +14,10 @@ import {
   DropResult,
 } from "@hello-pangea/dnd";
 import { API_BASE_URL } from "../../utils/api";
-
 import "react-quill-new/dist/quill.snow.css";
 
 const ReactQuill = dynamic(() => import("react-quill-new"), { ssr: false });
+
 /* =================== TYPES =================== */
 type AttrType = "size" | "color" | "material" | "custom";
 type StatusType = "visible" | "hidden";
@@ -28,12 +28,10 @@ type AttributeValue = {
   price_delta?: number;
   is_default?: boolean;
   image_url?: string | null;
-  image_id?: string | null;        // ✅ add this
+  image_id?: string | null;
   _preview_data?: string | null;
-  image_data?: string | null;
   short_description?: string | null;
 };
-
 
 type Attribute = {
   id: string;
@@ -54,23 +52,11 @@ type Subcategory = {
   status?: string;
   categories?: string[];
 };
-type OptionShortDescEntry = {
-  description: string;
-  attrId: string;
-  optionId: string;
-  optionName?: string;
-  updatedAt?: string;
-};
-
-type OptionShortDescMap = Record<string, OptionShortDescEntry>;
-
-const stripHtml = (html: string) =>
-  html
-    .replace(/<[^>]*>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
 
 /* =================== HELPERS =================== */
+const stripHtml = (html: string) =>
+  html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+
 const nowIso = () => new Date().toISOString();
 const uid = () =>
   typeof crypto !== "undefined" && (crypto as any).randomUUID
@@ -96,31 +82,6 @@ const withFrontendKey = (init: RequestInit = {}): RequestInit => {
   headers.set("X-Frontend-Key", FRONTEND_KEY);
   return { ...init, headers };
 };
-const uploadImage = async (dataUrl: string) => {
-  const body = JSON.stringify({
-    image: dataUrl, // your SaveImageAPIView accepts base64 in "image"
-    alt_text: "Option",
-    linked_table: "AttributeSubCategory",
-  });
-
-  const res = await fetch(
-    MEDIA_ENDPOINTS.SAVE_IMAGE,
-    withFrontendKey({
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
-    })
-  );
-  if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error(t || `Upload failed ${res.status}`);
-  }
-  const json = await res.json().catch(() => null);
-  // Prefer absolute URL for <img src>
-  const url = toAbsoluteUrl(json?.url || null);
-  if (!url) throw new Error("No image URL returned");
-  return { url, image_id: json?.image_id };
-};
 
 /* =================== ENDPOINTS =================== */
 const TAX_ENDPOINTS = {
@@ -133,7 +94,6 @@ const ATTR_ENDPOINTS = {
   SAVE: `${API_BASE_URL}/api/save-subcat-attributes/`,
   EDIT: `${API_BASE_URL}/api/edit-subcat-attributes/`,
   DELETE: `${API_BASE_URL}/api/delete-subcat-attributes/`, // (typo preserved as provided)
-  // Additional endpoints to sync with product attributes
   PRODUCT_ATTRS: `${API_BASE_URL}/api/show-product-attributes/`,
   SYNC_ATTRS: `${API_BASE_URL}/api/sync-product-attributes/`,
 };
@@ -145,7 +105,6 @@ const MEDIA_ENDPOINTS = {
 const toAbsoluteUrl = (u?: string | null) => {
   if (!u) return null;
   if (u.startsWith("http://") || u.startsWith("https://")) return u;
-  // handle "/media/..." or "media/..."
   if (u.startsWith("/")) return `${API_BASE_URL}${u}`;
   return `${API_BASE_URL}/${u}`;
 };
@@ -164,14 +123,39 @@ const jsonFetch = async (url: string, options: RequestInit = {}) => {
     const text = await res.text().catch(() => res.statusText);
     throw new Error(text || `HTTP ${res.status}`);
   }
-  // handle empty 204
   if (res.status === 204) return null;
-  // some backends may return empty
   const contentType = res.headers.get("content-type") || "";
   if (!contentType.includes("application/json")) return null;
   return res.json().catch(() => null);
 };
 
+/* =================== IMAGE UPLOAD =================== */
+const uploadImage = async (dataUrl: string) => {
+  const body = JSON.stringify({
+    image: dataUrl,
+    alt_text: "Option",
+    linked_table: "AttributeSubCategory",
+  });
+
+  const res = await fetch(
+    MEDIA_ENDPOINTS.SAVE_IMAGE,
+    withFrontendKey({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    })
+  );
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(t || `Upload failed ${res.status}`);
+  }
+  const json = await res.json().catch(() => null);
+  const url = toAbsoluteUrl(json?.url || null);
+  if (!url) throw new Error("No image URL returned");
+  return { url, image_id: json?.image_id as string | null };
+};
+
+/* =================== NORMALIZER =================== */
 const normalizeAttribute = (raw: any): Attribute => {
   const valuesSrc = Array.isArray(raw?.values)
     ? raw.values
@@ -179,20 +163,18 @@ const normalizeAttribute = (raw: any): Attribute => {
     ? raw.options
     : [];
 
-  const attrId = String(raw?.id ?? raw?.attribute_id ?? uid());
-const values: AttributeValue[] = valuesSrc.map((v: any) => ({
-  id: String(v.id ?? v.option_id ?? uid()),
-  name: String(v.name ?? v.label ?? ""),
-  price_delta: typeof v.price_delta === "number" ? v.price_delta : undefined,
-  is_default: !!v.is_default,
-  image_url: v.image_url ? toAbsoluteUrl(String(v.image_url)) : null,
-  image_id: v.image_id ?? null,               // ✅
-  short_description: typeof v.description === "string" ? v.description : null,
-}));
-
+  const values: AttributeValue[] = valuesSrc.map((v: any) => ({
+    id: String(v.id ?? v.option_id ?? uid()),
+    name: String(v.name ?? v.label ?? ""),
+    price_delta: typeof v.price_delta === "number" ? v.price_delta : undefined,
+    is_default: !!v.is_default,
+    image_url: v.image_url ? toAbsoluteUrl(String(v.image_url)) : null,
+    image_id: v.image_id ?? null,
+    short_description: typeof v.description === "string" ? v.description : null,
+  }));
 
   return {
-    id: attrId,
+    id: String(raw?.id ?? raw?.attribute_id ?? uid()),
     name: String(raw?.name ?? raw?.title ?? "Attribute"),
     slug:
       typeof raw?.slug === "string"
@@ -212,7 +194,6 @@ const values: AttributeValue[] = valuesSrc.map((v: any) => ({
       : [],
   };
 };
-
 
 /* =================== ATTRIBUTE MODAL =================== */
 type AttributeModalProps = {
@@ -236,17 +217,18 @@ const AttributeModal: React.FC<AttributeModalProps> = ({
   const isEdit = !!editing;
 
   const createEmptyOption = useCallback(
-  (): AttributeValue => ({
-    id: uid(),
-    name: "",
-    price_delta: undefined,
-    is_default: false,
-    image_url: null,          // ✅
-    _preview_data: null,      // ✅
-  }),
-  []
-);
-
+    (): AttributeValue => ({
+      id: uid(),
+      name: "",
+      price_delta: undefined,
+      is_default: false,
+      image_url: null,
+      image_id: null,
+      _preview_data: null,
+      short_description: "",
+    }),
+    []
+  );
 
   const [name, setName] = useState("");
   const [status, setStatus] = useState<StatusType>("visible");
@@ -254,93 +236,58 @@ const AttributeModal: React.FC<AttributeModalProps> = ({
   const [selectedSubcategory, setSelectedSubcategory] =
     useState<string>(GLOBAL_SCOPE);
   const [saving, setSaving] = useState(false);
-  const [draftAttrId, setDraftAttrId] = useState<string>(
-    () => editing?.id || uid()
-  );
+  const [draftAttrId, setDraftAttrId] = useState<string>(() => editing?.id || uid());
 
   useEffect(() => {
     if (!isOpen) return;
     setDraftAttrId(editing?.id || uid());
-  }, [isOpen, editing?.id]);
 
-  useEffect(() => {
-  if (!isOpen) return;
+    // init fields
+    setName(editing?.name || "");
+    setStatus((editing?.status as StatusType) || "visible");
 
-  setName(editing?.name || "");
-  setStatus((editing?.status as StatusType) || "visible");
-  const attrIdForForm = editing?.id || draftAttrId;
+    const nextValues = editing?.values?.length
+      ? editing.values.map((v) => ({
+          id: v.id || uid(),
+          name: v.name || "",
+          price_delta: typeof v.price_delta === "number" ? v.price_delta : undefined,
+          is_default: !!v.is_default,
+          image_url: v.image_url ?? null,
+          image_id: v.image_id ?? null,
+          _preview_data: null,
+          short_description: typeof v.short_description === "string" ? v.short_description : "",
+        }))
+      : [createEmptyOption()];
+    setValues(nextValues);
 
-// inside AttributeModal useEffect that initializes form state
-// inside AttributeModal useEffect(...) that runs on open
-const nextValues = editing?.values?.length
-  ? editing.values.map((v) => ({
-      id: v.id || uid(),
-      name: v.name || "",
-      price_delta:
-        typeof v.price_delta === "number" ? v.price_delta : undefined,
-      is_default: !!v.is_default,
-      image_url: v.image_url ?? null,
-      image_id: (v as any).image_id ?? null,
-      _preview_data: null,
-      short_description:
-        typeof v.short_description === "string" ? v.short_description : "",
-    }))
-  : [createEmptyOption()];
+    if (editing?.subcategory_ids?.length) {
+      setSelectedSubcategory(String(editing.subcategory_ids[0]));
+    } else if (selectedSubId !== "__all__") {
+      setSelectedSubcategory(String(selectedSubId));
+    } else {
+      setSelectedSubcategory(GLOBAL_SCOPE);
+    }
 
-// ✅ this is the missing line
-setValues(nextValues);
-
-
-  if (editing?.subcategory_ids?.length) {
-    setSelectedSubcategory(String(editing.subcategory_ids[0]));
-  } else if (selectedSubId !== "__all__") {
-    setSelectedSubcategory(String(selectedSubId));
-  } else {
-    setSelectedSubcategory(GLOBAL_SCOPE);
-  }
-
-  setSaving(false);
-}, [
-  isOpen,
-  editing,
-  selectedSubId,
-  createEmptyOption,
-  draftAttrId,
-]);
+    setSaving(false);
+  }, [isOpen, editing, selectedSubId, createEmptyOption]);
 
   const addOption = () => setValues((prev) => [...prev, createEmptyOption()]);
   const removeOption = (id: string) =>
-    setValues((prev) =>
-      prev.length <= 1 ? prev : prev.filter((o) => o.id !== id)
-    );
+    setValues((prev) => (prev.length <= 1 ? prev : prev.filter((o) => o.id !== id)));
   const updateOption = (id: string, patch: Partial<AttributeValue>) =>
-    setValues((prev) =>
-      prev.map((o) => (o.id === id ? { ...o, ...patch } : o))
-    );
+    setValues((prev) => prev.map((o) => (o.id === id ? { ...o, ...patch } : o)));
+
   const toggleDefault = (id: string) =>
     setValues((prev) => {
       const target = prev.find((o) => o.id === id);
       const shouldSet = !target?.is_default;
       return prev.map((o) => {
-        if (o.id !== id)
-          return {
-            ...o,
-            is_default: false,
-          };
-
-        if (!shouldSet)
-          return {
-            ...o,
-            is_default: false,
-          };
-
-        return {
-          ...o,
-          is_default: true,
-          price_delta: undefined,
-        };
+        if (o.id !== id) return { ...o, is_default: false };
+        if (!shouldSet) return { ...o, is_default: false };
+        return { ...o, is_default: true, price_delta: undefined };
       });
     });
+
   const handlePriceChange = (id: string, raw: string) => {
     setValues((prev) =>
       prev.map((o) => {
@@ -353,28 +300,28 @@ setValues(nextValues);
     );
   };
 
-const handleOptionImageChange = (id: string, file: File | null) => {
-  if (!file) {
-    updateOption(id, { image_url: null, image_id: null, _preview_data: null });
-    return;
-  }
-  if (!file.type?.startsWith("image/")) {
-    toast.error("Only image files are supported.");
-    return;
-  }
+  const handleOptionImageChange = (id: string, file: File | null) => {
+    if (!file) {
+      updateOption(id, { image_url: null, image_id: null, _preview_data: null });
+      return;
+    }
+    if (!file.type?.startsWith("image/")) {
+      toast.error("Only image files are supported.");
+      return;
+    }
 
-  fileToDataUrl(file)
-    .then(async (dataUrl) => {
-      updateOption(id, { _preview_data: dataUrl });
-      const { url, image_id } = await uploadImage(dataUrl);
-      updateOption(id, { image_url: url, image_id, _preview_data: null });   // ✅ keep id
-      toast.success("Image uploaded");
-    })
-    .catch(() => {
-      toast.error("Could not process the selected image.");
-    });
-};
-  
+    fileToDataUrl(file)
+      .then(async (dataUrl) => {
+        updateOption(id, { _preview_data: dataUrl });
+        const { url, image_id } = await uploadImage(dataUrl);
+        updateOption(id, { image_url: url, image_id, _preview_data: null });
+        toast.success("Image uploaded");
+      })
+      .catch(() => {
+        toast.error("Could not process the selected image.");
+      });
+  };
+
   const quillModules = useMemo(
     () => ({
       toolbar: [
@@ -388,7 +335,6 @@ const handleOptionImageChange = (id: string, file: File | null) => {
     }),
     []
   );
-
   const quillFormats = useMemo(
     () => ["header", "bold", "italic", "underline", "list", "bullet", "link"],
     []
@@ -397,59 +343,43 @@ const handleOptionImageChange = (id: string, file: File | null) => {
   const handleSave = async () => {
     if (!name.trim()) return toast.error("Name is required");
     const meaningful = values.filter((v) => v.name.trim());
-    if (!meaningful.length)
-      return toast.error("Add at least one option with a label.");
+    if (!meaningful.length) return toast.error("Add at least one option with a label.");
 
     setSaving(true);
-const sanitizedValues = meaningful.map((v) => ({
-  id: v.id,
-  name: v.name.trim(),
-  price_delta:
-    typeof v.price_delta === "number" && !Number.isNaN(v.price_delta)
-      ? v.price_delta
-      : undefined,
-  is_default: !!v.is_default,
-  image_url: v.image_url || null,
-  image_id: v.image_id || null,                  // ✅ include id
-  description:
-    typeof v.short_description === "string"
-      ? stripHtml(v.short_description || "")
-      : undefined,
-}));
+
+    const sanitizedValues = meaningful.map((v) => ({
+      id: v.id,
+      name: v.name.trim(),
+      price_delta:
+        typeof v.price_delta === "number" && !Number.isNaN(v.price_delta) ? v.price_delta : undefined,
+      is_default: !!v.is_default,
+      image_url: v.image_url || null,
+      image_id: v.image_id || null,
+      description:
+        typeof v.short_description === "string" ? stripHtml(v.short_description || "") : undefined,
+    }));
 
     const base: Attribute = {
       id: editing?.id || draftAttrId || uid(),
       name: name.trim(),
-      slug: name
-        .trim()
-        .toLowerCase()
-        .replace(/\s+/g, "-")
-        .replace(/[^a-z0-9-]/g, ""),
+      slug: name.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, ""),
       type: editing?.type || "custom",
       status,
-      values: sanitizedValues,
+      values: sanitizedValues as any,
       created_at: editing?.created_at || nowIso(),
       subcategory_ids:
-        selectedSubcategory === "__global__"
-          ? []
-          : [String(selectedSubcategory)],
+        selectedSubcategory === GLOBAL_SCOPE ? [] : [String(selectedSubcategory)],
     };
 
     try {
       if (isEdit) {
-        // EDIT existing
-        await jsonFetch(ATTR_ENDPOINTS.EDIT, {
-          method: "PUT",
-          body: JSON.stringify(base),
-        });
+        await jsonFetch(ATTR_ENDPOINTS.EDIT, { method: "PUT", body: JSON.stringify(base) });
         toast.success("Attribute updated");
       } else {
-        // SAVE new
         const created = await jsonFetch(ATTR_ENDPOINTS.SAVE, {
           method: "POST",
           body: JSON.stringify(base),
         });
-        // If backend returns ID, adopt it
         if (created?.id) base.id = String(created.id);
         toast.success("Attribute created");
       }
@@ -465,10 +395,7 @@ const sanitizedValues = meaningful.map((v) => ({
   if (!isOpen) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 backdrop-blur-sm p-4"
-      onClick={onClose}
-    >
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 backdrop-blur-sm p-4" onClick={onClose}>
       <div
         className="w-full max-w-4xl bg-white rounded-2xl shadow-xl border border-gray-200 max-h-[90vh] flex flex-col"
         onClick={(e) => e.stopPropagation()}
@@ -478,10 +405,7 @@ const sanitizedValues = meaningful.map((v) => ({
           <h3 className="text-xl font-semibold text-[#7A1C16]">
             {isEdit ? "Edit Attribute" : "Add Attribute"}
           </h3>
-          <button
-            onClick={onClose}
-            className="px-3 py-2 rounded-full border hover:bg-gray-50 text-black"
-          >
+          <button onClick={onClose} className="px-3 py-2 rounded-full border hover:bg-gray-50 text-black">
             Close
           </button>
         </div>
@@ -490,9 +414,7 @@ const sanitizedValues = meaningful.map((v) => ({
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
           <div className="grid md:grid-cols-2 gap-4">
             <div className="md:col-span-2">
-              <label className="block text-sm font-medium text-black mb-1">
-                Subcategory
-              </label>
+              <label className="block text-sm font-medium text-black mb-1">Subcategory</label>
               <select
                 className="w-full px-3 py-2 rounded-lg border focus:outline-none focus:ring-2 focus:ring-[#7A1C16] bg-white text-black"
                 value={selectedSubcategory}
@@ -506,15 +428,12 @@ const sanitizedValues = meaningful.map((v) => ({
                 ))}
               </select>
               <p className="text-xs text-gray-500 mt-2">
-                Choose the subcategory this attribute should belong to. Pick
-                "Global" to make it available everywhere.
+                Choose the subcategory this attribute should belong to. Pick "Global" to make it available everywhere.
               </p>
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-black">
-                Attribute Name
-              </label>
+              <label className="block text-sm font-medium text-black">Attribute Name</label>
               <input
                 className="w-full px-3 py-2 rounded-lg border focus:outline-none focus:ring-2 focus:ring-[#7A1C16] text-black"
                 value={name}
@@ -523,9 +442,7 @@ const sanitizedValues = meaningful.map((v) => ({
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-black">
-                Status
-              </label>
+              <label className="block text-sm font-medium text-black">Status</label>
               <select
                 className="w-full px-3 py-2 rounded-lg border focus:outline-none focus:ring-2 focus:ring-[#7A1C16] bg-white text-black"
                 value={status}
@@ -541,34 +458,23 @@ const sanitizedValues = meaningful.map((v) => ({
             <div className="flex items-center justify-between px-4 py-3 bg-gray-50">
               <div>
                 <h4 className="font-semibold text-black">Attribute Options</h4>
-                <p className="text-xs text-gray-500">
-                  Add every option customers can pick along with optional price
-                  adjustments.
-                </p>
+                <p className="text-xs text-gray-500">Add every option customers can pick along with optional price adjustments.</p>
               </div>
-              <button
-                onClick={addOption}
-                className="bg-[#7A1C16] text-white px-4 py-1.5 rounded-full hover:opacity-90 text-sm"
-              >
+              <button onClick={addOption} className="bg-[#7A1C16] text-white px-4 py-1.5 rounded-full hover:opacity-90 text-sm">
                 + Add Option
               </button>
             </div>
 
             <div className="p-4 space-y-4">
               {values.map((option, idx) => (
-                <div
-                  key={option.id}
-                  className="border border-gray-200 rounded-2xl bg-white shadow-sm"
-                >
+                <div key={option.id} className="border border-gray-200 rounded-2xl bg-white shadow-sm">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-4 py-3 border-b border-gray-100 bg-gray-50/60">
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-medium text-gray-600 bg-gray-200 px-2 py-1 rounded-full">
                         Option {idx + 1}
                       </span>
                       {option.is_default && (
-                        <span className="text-xs font-semibold text-[#7A1C16] bg-red-100 px-2 py-1 rounded-full">
-                          Default
-                        </span>
+                        <span className="text-xs font-semibold text-[#7A1C16] bg-red-100 px-2 py-1 rounded-full">Default</span>
                       )}
                     </div>
                     <div className="flex items-center gap-2">
@@ -596,139 +502,98 @@ const sanitizedValues = meaningful.map((v) => ({
 
                   <div className="p-4 grid md:grid-cols-12 gap-3">
                     <div className="md:col-span-5">
-                      <label className="block text-xs font-medium text-gray-600 mb-1">
-                        Option label
-                      </label>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Option label</label>
                       <input
                         className="w-full px-3 py-2 rounded-lg border focus:outline-none focus:ring-2 focus:ring-[#7A1C16] text-black"
                         value={option.name}
-                        onChange={(e) =>
-                          updateOption(option.id, { name: e.target.value })
-                        }
+                        onChange={(e) => updateOption(option.id, { name: e.target.value })}
                         placeholder="e.g., Gloss, Matte"
                       />
                     </div>
                     <div className="md:col-span-4">
-                      <label className="block text-xs font-medium text-gray-600 mb-1">
-                        Price adjustment
-                      </label>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Price adjustment</label>
                       <div className="flex items-center gap-2">
-                        <span className="px-2 py-2 rounded-lg border bg-gray-100 text-gray-600 text-sm">
-                          ±
-                        </span>
+                        <span className="px-2 py-2 rounded-lg border bg-gray-100 text-gray-600 text-sm">±</span>
                         <input
                           type="number"
                           step="0.01"
                           className={`flex-1 px-3 py-2 rounded-lg border focus:outline-none focus:ring-2 focus:ring-[#7A1C16] text-black ${
-                            option.is_default
-                              ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                              : ""
+                            option.is_default ? "bg-gray-100 text-gray-400 cursor-not-allowed" : ""
                           }`}
-                          value={
-                            typeof option.price_delta === "number"
-                              ? option.price_delta
-                              : ""
-                          }
-                          onChange={(e) =>
-                            handlePriceChange(option.id, e.target.value)
-                          }
+                          value={typeof option.price_delta === "number" ? option.price_delta : ""}
+                          onChange={(e) => handlePriceChange(option.id, e.target.value)}
                           placeholder="0.00"
                           disabled={option.is_default}
                         />
                       </div>
                       <p className="text-xs text-gray-500 mt-1">
-                        {option.is_default
-                          ? "Default option uses the base price."
-                          : "Use negative values for discounts."}
+                        {option.is_default ? "Default option uses the base price." : "Use negative values for discounts."}
                       </p>
                     </div>
+
                     <div className="md:col-span-12">
-                      <label className="block text-xs font-medium text-gray-600 mb-1">
-                        Short description
-                      </label>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Short description</label>
                       <div className="rounded-lg border text-black border-gray-200 overflow-hidden">
                         <ReactQuill
                           theme="snow"
                           value={option.short_description || ""}
-                          onChange={(content) =>
-                            updateOption(option.id, {
-                              short_description: content,
-                            })
-                          }
+                          onChange={(content) => updateOption(option.id, { short_description: content })}
                           modules={quillModules}
                           formats={quillFormats}
                           className="h-40"
                         />
                       </div>
-                      <p className="text-[10px] text-gray-500 mt-1">
-                        Customers will see this when they hover over the option.
-                      </p>
+                      <p className="text-[10px] text-gray-500 mt-1">Customers will see this when they hover over the option.</p>
                     </div>
-                   <div className="md:col-span-3">
-  <label className="block text-xs font-medium text-gray-600 mb-1">
-    Option image
-  </label>
-  <div className="flex items-start gap-3">
-    <div className="w-16 h-16 md:w-20 md:h-20 rounded-lg border-2 border-dashed border-gray-300 overflow-hidden bg-white flex items-center justify-center">
-      {option._preview_data || option.image_url ? (
-        <img
-          src={option._preview_data || (option.image_url as string)}
-          alt={option.name || `Option ${idx + 1}`}
-          className="w-full h-full object-cover"
-          onError={(e) => {
-            (e.currentTarget as HTMLImageElement).src = "/images/default.jpg";
-          }}
-        />
-      ) : (
-        <svg
-          className="w-6 h-6 text-gray-300"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={1.5}
-            d="M3 16l5-5a2 2 0 012.828 0L17 17m-2-2l1.586-1.586a2 2 0 012.828 0L21 15M4 7h16"
-          />
-        </svg>
-      )}
-    </div>
 
-    <div className="flex flex-col gap-2 text-xs">
-      <label className="px-3 py-1.5 rounded-full border border-[#7A1C16] text-[#7A1C16] cursor-pointer hover:bg-[#7A1C16]/10 text-center">
-        {(option._preview_data || option.image_url) ? "Change" : "Upload"}
-        <input
-          type="file"
-          accept="image/*"
-          className="hidden"
-          onChange={(e) =>
-            handleOptionImageChange(
-              option.id,
-              (e.target.files && e.target.files[0]) || null
-            )
-          }
-        />
-      </label>
+                    <div className="md:col-span-3">
+                      <label className="block text-xs font-medium text-gray-600 mb-1">Option image</label>
+                      <div className="flex items-start gap-3">
+                        <div className="w-16 h-16 md:w-20 md:h-20 rounded-lg border-2 border-dashed border-gray-300 overflow-hidden bg-white flex items-center justify-center">
+                          {option._preview_data || option.image_url ? (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              src={option._preview_data || (option.image_url as string)}
+                              alt={option.name || `Option ${idx + 1}`}
+                              className="w-full h-full object-cover"
+                              onError={(e) => {
+                                (e.currentTarget as HTMLImageElement).src = "/images/default.jpg";
+                              }}
+                            />
+                          ) : (
+                            <svg className="w-6 h-6 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M3 16l5-5a2 2 0 012.828 0L17 17m-2-2l1.586-1.586a2 2 0 012.828 0L21 15M4 7h16" />
+                            </svg>
+                          )}
+                        </div>
 
-      {(option._preview_data || option.image_url) && (
-        <button
-          type="button"
-          onClick={() => updateOption(option.id, { image_url: null, _preview_data: null })}
-          className="text-red-600 hover:text-red-700 underline"
-        >
-          Remove
-        </button>
-      )}
+                        <div className="flex flex-col gap-2 text-xs">
+                          <label className="px-3 py-1.5 rounded-full border border-[#7A1C16] text-[#7A1C16] cursor-pointer hover:bg-[#7A1C16]/10 text-center">
+                            {(option._preview_data || option.image_url) ? "Change" : "Upload"}
+                            <input
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={(e) =>
+                                handleOptionImageChange(option.id, (e.target.files && e.target.files[0]) || null)
+                              }
+                            />
+                          </label>
 
-      <p className="text-[10px] text-gray-500 max-w-[9rem]">
-        JPG or PNG up to 2&nbsp;MB.
-      </p>
-    </div>
-  </div>
-</div>
+                          {(option._preview_data || option.image_url) && (
+                            <button
+                              type="button"
+                              onClick={() => updateOption(option.id, { image_url: null, image_id: null, _preview_data: null })}
+                              className="text-red-600 hover:text-red-700 underline"
+                            >
+                              Remove
+                            </button>
+                          )}
 
+                          <p className="text-[10px] text-gray-500 max-w-[9rem]">JPG or PNG up to 2&nbsp;MB.</p>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -738,18 +603,11 @@ const sanitizedValues = meaningful.map((v) => ({
 
         {/* Fixed Footer */}
         <div className="flex justify-end gap-2 p-5 border-t bg-gray-50/50 flex-shrink-0">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 rounded-full border hover:bg-gray-50 text-black"
-          >
-            Cancel
-          </button>
+          <button onClick={onClose} className="px-4 py-2 rounded-full border hover:bg-gray-50 text-black">Cancel</button>
           <button
             onClick={handleSave}
             disabled={saving}
-            className={`px-5 py-2 rounded-full bg-[#7A1C16] text-white hover:opacity-90 transition ${
-              saving ? "opacity-75 cursor-wait" : ""
-            }`}
+            className={`px-5 py-2 rounded-full bg-[#7A1C16] text-white hover:opacity-90 transition ${saving ? "opacity-75 cursor-wait" : ""}`}
           >
             {saving ? "Saving…" : isEdit ? "Save Changes" : "Create Attribute"}
           </button>
@@ -818,7 +676,6 @@ export default function AttributesPage() {
           }));
       }
 
-      // If backend returns nothing, we still show empty filters gracefully.
       setCategories(cats);
       setSubcategories(subs);
     } finally {
@@ -830,9 +687,7 @@ export default function AttributesPage() {
   const loadAttributesApi = useCallback(async (subId?: string) => {
     const q =
       subId && subId !== "__all__"
-        ? `${ATTR_ENDPOINTS.SHOW}?subcategory_id=${encodeURIComponent(
-            String(subId)
-          )}`
+        ? `${ATTR_ENDPOINTS.SHOW}?subcategory_id=${encodeURIComponent(String(subId))}`
         : ATTR_ENDPOINTS.SHOW;
     try {
       setIsLoading(true);
@@ -840,66 +695,53 @@ export default function AttributesPage() {
 
       const list = Array.isArray(data)
         ? data
-        : Array.isArray(data?.results)
-        ? data.results
-        : Array.isArray(data?.attributes)
-        ? data.attributes
+        : Array.isArray((data as any)?.results)
+        ? (data as any).results
+        : Array.isArray((data as any)?.attributes)
+        ? (data as any).attributes
         : [];
       setAttributes(list.map((raw: any) => normalizeAttribute(raw)));
     } catch (e: any) {
       setAttributes([]);
-      toast.error(
-        `Failed to load attributes: ${e?.message || "Server unreachable"}`
-      );
+      toast.error(`Failed to load attributes: ${e?.message || "Server unreachable"}`);
     } finally {
       setIsLoading(false);
     }
   }, []);
 
-  /* ============ API: sync product attributes ============ */
+  /* ============ API: sync product attributes (optional pre-step) ============ */
   const syncProductAttributes = useCallback(async () => {
     try {
-      // First, try to sync product attributes to the attributes system
       await jsonFetch(ATTR_ENDPOINTS.SYNC_ATTRS, {
         method: "POST",
         body: JSON.stringify({ sync_all: true }),
       });
-
-      // Then reload the attributes
       await loadAttributesApi(selectedSubId);
-
       toast.success("Product attributes synchronized successfully!");
     } catch (e: any) {
       console.warn("Sync failed, continuing with regular load:", e);
-      // If sync fails, just load normally
       await loadAttributesApi(selectedSubId);
     }
   }, [loadAttributesApi, selectedSubId]);
 
+  /* Initial taxonomy load once */
+  useEffect(() => {
+    loadTaxonomy();
+  }, [loadTaxonomy]);
 
+  /* Reload attributes whenever subcategory filter changes */
   useEffect(() => {
     loadAttributesApi(selectedSubId);
   }, [selectedSubId, loadAttributesApi]);
 
-  useEffect(() => {
-  loadTaxonomy();
-  loadAttributesApi(selectedSubId);
-}, [selectedSubId]);
-
-
   // cascade: restrict subs by selected category
   const subOptions = useMemo(() => {
     if (!selectedCategory) return subcategories;
-    return subcategories.filter((s) =>
-      (s.categories || []).includes(selectedCategory)
-    );
+    return subcategories.filter((s) => (s.categories || []).includes(selectedCategory));
   }, [subcategories, selectedCategory]);
 
   useEffect(() => {
-    if (
-      selectedSubId !== "__all__" &&
-      !subOptions.some((s) => s.id === selectedSubId)
-    ) {
+    if (selectedSubId !== "__all__" && !subOptions.some((s) => s.id === selectedSubId)) {
       setSelectedSubId("__all__");
       loadAttributesApi("__all__");
     }
@@ -912,9 +754,7 @@ export default function AttributesPage() {
     if (selectedCategory && selectedSubId === "__all__") {
       const subsInCat = new Set(subOptions.map((s) => s.id));
       base = base.filter(
-        (a) =>
-          a.subcategory_ids.length === 0 ||
-          a.subcategory_ids.some((id) => subsInCat.has(id))
+        (a) => a.subcategory_ids.length === 0 || a.subcategory_ids.some((id) => subsInCat.has(id))
       );
     }
 
@@ -924,21 +764,11 @@ export default function AttributesPage() {
     }
     if (statusFilter) base = base.filter((a) => a.status === statusFilter);
 
-    if (sortOrder === "alpha")
-      base.sort((a, b) => a.name.localeCompare(b.name));
-    if (sortOrder === "recent")
-      base.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+    if (sortOrder === "alpha") base.sort((a, b) => a.name.localeCompare(b.name));
+    if (sortOrder === "recent") base.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
 
     return base;
-  }, [
-    attributes,
-    search,
-    statusFilter,
-    sortOrder,
-    selectedCategory,
-    selectedSubId,
-    subOptions,
-  ]);
+  }, [attributes, search, statusFilter, sortOrder, selectedCategory, selectedSubId, subOptions]);
 
   const categoryNameMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -960,35 +790,30 @@ export default function AttributesPage() {
 
   // bulk
   const toggleSelect = (id: string) =>
-    setSelectedIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
-  const allSelected =
-    filtered.length > 0 && filtered.every((a) => selectedIds.includes(a.id));
-  const toggleSelectAll = () =>
-    setSelectedIds(allSelected ? [] : filtered.map((a) => a.id));
+    setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const allSelected = filtered.length > 0 && filtered.every((a) => selectedIds.includes(a.id));
+  const toggleSelectAll = () => setSelectedIds(allSelected ? [] : filtered.map((a) => a.id));
 
-const handleDelete = async () => {
-  if (!selectedIds.length || isDeleting || isLoading) return;
-  if (!confirm(`Delete ${selectedIds.length} selected attribute(s)?`)) return;
+  const handleDelete = async () => {
+    if (!selectedIds.length || isDeleting || isLoading) return;
+    if (!confirm(`Delete ${selectedIds.length} selected attribute(s)?`)) return;
 
-  setIsDeleting(true);
-  try {
-    const res = await jsonFetch(ATTR_ENDPOINTS.DELETE, {
-      method: "POST",
-      body: JSON.stringify({ ids: selectedIds }),
-    });
-    const deleted = typeof res?.deleted === "number" ? res.deleted : 0;
-    toast.success(`Deleted ${deleted} item(s)`);
-    setSelectedIds([]);
-    await loadAttributesApi(selectedSubId);
-  } catch (e: any) {
-    toast.error(`Delete failed: ${e?.message || "Unknown error"}`);
-  } finally {
-    setIsDeleting(false);
-  }
-};
-
+    setIsDeleting(true);
+    try {
+      const res = await jsonFetch(ATTR_ENDPOINTS.DELETE, {
+        method: "POST",
+        body: JSON.stringify({ ids: selectedIds }),
+      });
+      const deleted = typeof (res as any)?.deleted === "number" ? (res as any).deleted : 0;
+      toast.success(`Deleted ${deleted} item(s)`);
+      setSelectedIds([]);
+      await loadAttributesApi(selectedSubId);
+    } catch (e: any) {
+      toast.error(`Delete failed: ${e?.message || "Unknown error"}`);
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   // values reorder
   const openValues = (attr: Attribute) => {
@@ -1009,21 +834,22 @@ const handleDelete = async () => {
   const saveValuesOrder = async () => {
     if (!activeValuesAttr) return;
     try {
-      // Send edited values order through EDIT endpoint.
       const attr = attributes.find((a) => a.id === activeValuesAttr);
       if (!attr) throw new Error("Attribute not found");
+
       const reordered: Attribute = {
         ...attr,
-values: valuesDraft.map((v) => ({
-  id: v.id,
-  name: v.name,
-  price_delta: typeof v.price_delta === "number" && !Number.isNaN(v.price_delta) ? v.price_delta : undefined,
-  is_default: !!v.is_default,
-  image_url: v.image_url || null,
-  image_id: v.image_id || null,                 // ✅ keep id on reorder too
-  description: typeof v.short_description === "string" ? stripHtml(v.short_description || "") : undefined,
-})),
-
+        values: valuesDraft.map((v) => ({
+          id: v.id,
+          name: v.name,
+          price_delta:
+            typeof v.price_delta === "number" && !Number.isNaN(v.price_delta) ? v.price_delta : undefined,
+          is_default: !!v.is_default,
+          image_url: v.image_url || null,
+          image_id: v.image_id || null,
+          description:
+            typeof v.short_description === "string" ? stripHtml(v.short_description || "") : undefined,
+        })) as any,
       };
 
       await jsonFetch(ATTR_ENDPOINTS.EDIT, {
@@ -1069,16 +895,13 @@ values: valuesDraft.map((v) => ({
     if (!canLinkOps) return toast.info("Pick a specific subcategory first.");
     const attr = attributes.find((a) => a.id === id);
     if (!attr) return;
-    const next = (attr.subcategory_ids || []).filter(
-      (x) => x !== String(selectedSubId)
-    );
+    const next = (attr.subcategory_ids || []).filter((x) => x !== String(selectedSubId));
     await patchLinking(id, next);
     toast.success("Unlinked");
   };
 
   const isLinkedToSelected = (a: Attribute) =>
-    selectedSubId !== "__all__" &&
-    a.subcategory_ids.includes(String(selectedSubId));
+    selectedSubId !== "__all__" && a.subcategory_ids.includes(String(selectedSubId));
 
   /* =================== UI =================== */
   return (
@@ -1094,12 +917,8 @@ values: valuesDraft.map((v) => ({
             {/* Header */}
             <div className="mb-6 sm:mb-8 bg-gradient-to-r from-white via-[#f8f9fa] to-gray-100 p-4 sm:p-6 rounded-2xl shadow-sm border border-gray-200 flex items-center justify-between">
               <div>
-                <h1 className="text-3xl font-bold text-gray-800 flex items-center gap-2">
-                  🏷️ Attributes
-                </h1>
-                <p className="text-gray-500 mt-1 text-sm">
-                  Manage product attributes and their values across categories.
-                </p>
+                <h1 className="text-3xl font-bold text-gray-800 flex items-center gap-2">🏷️ Attributes</h1>
+                <p className="text-gray-500 mt-1 text-sm">Manage product attributes and their values across categories.</p>
               </div>
               <div className="flex flex-wrap gap-2 items-center">
                 <button
@@ -1175,14 +994,13 @@ values: valuesDraft.map((v) => ({
                 <thead className="text-white bg-[#891F1A] sticky top-0 z-10">
                   <tr>
                     <th className="p-3 text-center w-4">
-                     <Checkbox
-  checked={allSelected}
-  onChange={(_, __) => toggleSelectAll()}  // explicit
-  color="secondary"
-  size="small"
-  sx={{ color: "#fff", "&.Mui-checked": { color: "#fff" }, marginLeft: "-13px" }}
-/>
-
+                      <Checkbox
+                        checked={allSelected}
+                        onChange={(_, __) => toggleSelectAll()}
+                        color="secondary"
+                        size="small"
+                        sx={{ color: "#fff", "&.Mui-checked": { color: "#fff" }, marginLeft: "-13px" }}
+                      />
                     </th>
                     <th className="p-3 text-center">ID</th>
                     <th className="p-3 text-center">Thumbnail</th>
@@ -1197,28 +1015,20 @@ values: valuesDraft.map((v) => ({
                 <tbody className="text-gray-800 divide-y divide-gray-100">
                   {isLoading ? (
                     <tr>
-                      <td
-                        colSpan={9}
-                        className="py-6 text-center text-gray-500 italic"
-                      >
+                      <td colSpan={9} className="py-6 text-center text-gray-500 italic">
                         Loading…
                       </td>
                     </tr>
                   ) : filtered.length === 0 ? (
                     <tr>
-                      <td
-                        colSpan={9}
-                        className="py-6 text-center text-gray-500 italic"
-                      >
+                      <td colSpan={9} className="py-6 text-center text-gray-500 italic">
                         No attributes to show
                       </td>
                     </tr>
                   ) : (
                     filtered.map((a) => {
-                      const prettyStatus =
-                        a.status === "visible" ? "In Use" : "Hidden";
-                      const statusColor =
-                        a.status === "visible" ? "#28A745" : "#6C757D";
+                      const prettyStatus = a.status === "visible" ? "In Use" : "Hidden";
+                      const statusColor = a.status === "visible" ? "#28A745" : "#6C757D";
                       const linked = isLinkedToSelected(a);
                       const subRecords = a.subcategory_ids
                         .map((id) => subcategoryMap.get(String(id)))
@@ -1226,8 +1036,7 @@ values: valuesDraft.map((v) => ({
                       const categoryLabels = Array.from(
                         new Set(
                           subRecords.flatMap((sub) => {
-                            if (!sub.categories || sub.categories.length === 0)
-                              return [];
+                            if (!sub.categories || sub.categories.length === 0) return [];
                             return sub.categories
                               .map((catId) => {
                                 const key = String(catId);
@@ -1238,12 +1047,9 @@ values: valuesDraft.map((v) => ({
                         )
                       );
                       const hasAnySub = a.subcategory_ids.length > 0;
-                      const previewImage =
-                        a.values.find((v) => v.image_url)?.image_url || null;
+                      const previewImage = a.values.find((v) => v.image_url)?.image_url || null;
 
-                      const fallbackInitial = a.name
-                        ? a.name.charAt(0).toUpperCase()
-                        : "?";
+                      const fallbackInitial = a.name ? a.name.charAt(0).toUpperCase() : "?";
                       const optionCount = a.values.length;
                       const defaultOption = a.values.find((v) => v.is_default);
 
@@ -1263,25 +1069,18 @@ values: valuesDraft.map((v) => ({
                               }}
                             />
                           </td>
-                          <td className="p-4 text-center font-semibold text-[#891F1A]">
-                            {a.slug || a.id}
-                          </td>
+                          <td className="p-4 text-center font-semibold text-[#891F1A]">{a.slug || a.id}</td>
                           <td className="p-4 text-center">
                             {previewImage ? (
-                              <img
-                                src={previewImage}
-                                alt={a.name}
-                                className="w-12 h-12 object-cover rounded shadow mx-auto"
-                              />
+                              // eslint-disable-next-line @next/next/no-img-element
+                              <img src={previewImage} alt={a.name} className="w-12 h-12 object-cover rounded shadow mx-auto" />
                             ) : (
                               <div className="w-12 h-12 mx-auto rounded-full bg-[#F5E8E7] text-[#891F1A] flex items-center justify-center font-semibold">
                                 {fallbackInitial}
                               </div>
                             )}
                           </td>
-                          <td className="p-4 text-center font-medium text-black">
-                            {a.name}
-                          </td>
+                          <td className="p-4 text-center font-medium text-black">{a.name}</td>
                           <td className="p-4 text-center">
                             {categoryLabels.length ? (
                               <div className="flex flex-wrap gap-1 justify-center">
@@ -1300,10 +1099,7 @@ values: valuesDraft.map((v) => ({
                               </span>
                             )}
                           </td>
-                          <td
-                            className="p-4 text-center font-semibold"
-                            style={{ color: statusColor }}
-                          >
+                          <td className="p-4 text-center font-semibold" style={{ color: statusColor }}>
                             {prettyStatus}
                           </td>
                           <td className="p-4 text-center">
@@ -1311,9 +1107,7 @@ values: valuesDraft.map((v) => ({
                               {optionCount} option{optionCount === 1 ? "" : "s"}
                             </div>
                             <div className="text-xs text-gray-500 mt-1">
-                              {defaultOption
-                                ? `Default: ${defaultOption.name}`
-                                : "No default set"}
+                              {defaultOption ? `Default: ${defaultOption.name}` : "No default set"}
                             </div>
                             <button
                               onClick={() => openValues(a)}
@@ -1324,9 +1118,7 @@ values: valuesDraft.map((v) => ({
                           </td>
                           <td className="p-4 text-center">
                             {!hasAnySub ? (
-                              <span className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-700">
-                                Global
-                              </span>
+                              <span className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-700">Global</span>
                             ) : selectedSubId === "__all__" ? (
                               subRecords.length ? (
                                 <div className="flex flex-wrap gap-1 justify-center">
@@ -1340,18 +1132,12 @@ values: valuesDraft.map((v) => ({
                                   ))}
                                 </div>
                               ) : (
-                                <span className="text-xs px-2 py-1 rounded-full bg-yellow-100 text-yellow-800">
-                                  Scoped
-                                </span>
+                                <span className="text-xs px-2 py-1 rounded-full bg-yellow-100 text-yellow-800">Scoped</span>
                               )
                             ) : linked ? (
-                              <span className="text-xs px-2 py-1 rounded-full bg-green-100 text-green-700">
-                                This Subcategory
-                              </span>
+                              <span className="text-xs px-2 py-1 rounded-full bg-green-100 text-green-700">This Subcategory</span>
                             ) : (
-                              <span className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-700">
-                                Other Sub
-                              </span>
+                              <span className="text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-700">Other Sub</span>
                             )}
                           </td>
                           <td className="p-4 text-center">
@@ -1393,22 +1179,19 @@ values: valuesDraft.map((v) => ({
             </div>
 
             {/* footer actions (right aligned) */}
-            <div className="flex items-center justify-end gap-3">
-              <span className="text-sm text-gray-600">
-                Selected: {selectedIds.length}
-              </span>
-                  <button
-  onClick={handleDelete}
-  disabled={!selectedIds.length || isDeleting || isLoading}
-  className={`px-4 py-2 rounded-full text-sm ${
-    !selectedIds.length || isDeleting || isLoading
-      ? "bg-gray-400 text-white cursor-not-allowed"
-      : "bg-[#7A1C16] text-white hover:opacity-90"
-  }`}
->
-  {isDeleting ? "Deleting…" : "Delete Selected"}
-</button>
-
+            <div className="flex items-center justify-end gap-3 mt-3">
+              <span className="text-sm text-gray-600">Selected: {selectedIds.length}</span>
+              <button
+                onClick={handleDelete}
+                disabled={!selectedIds.length || isDeleting || isLoading}
+                className={`px-4 py-2 rounded-full text-sm ${
+                  !selectedIds.length || isDeleting || isLoading
+                    ? "bg-gray-400 text-white cursor-not-allowed"
+                    : "bg-[#7A1C16] text-white hover:opacity-90"
+                }`}
+              >
+                {isDeleting ? "Deleting…" : "Delete Selected"}
+              </button>
             </div>
           </div>
         </main>
@@ -1429,39 +1212,22 @@ values: valuesDraft.map((v) => ({
 
       {/* Values Reorder Modal */}
       {activeValuesAttr && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 backdrop-blur-sm p-4"
-          onClick={closeValues}
-        >
-          <div
-            className="w-full max-w-xl bg-white rounded-2xl shadow-xl border border-gray-200"
-            onClick={(e) => e.stopPropagation()}
-          >
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-white/80 backdrop-blur-sm p-4" onClick={closeValues}>
+          <div className="w-full max-w-xl bg-white rounded-2xl shadow-xl border border-gray-200" onClick={(e) => e.stopPropagation()}>
             <div className="p-4 border-b flex items-center justify-between">
-              <h3 className="text-lg font-semibold text-[#7A1C16]">
-                Reorder Values
-              </h3>
-              <button
-                onClick={closeValues}
-                className="px-3 py-2 rounded-full border hover:bg-gray-50"
-              >
+              <h3 className="text-lg font-semibold text-[#7A1C16]">Reorder Values</h3>
+              <button onClick={closeValues} className="px-3 py-2 rounded-full border hover:bg-gray-50">
                 Close
               </button>
             </div>
             <div className="p-4">
               {!valuesDraft || valuesDraft.length === 0 ? (
-                <div className="py-10 text-center text-gray-500 italic">
-                  No values to reorder.
-                </div>
+                <div className="py-10 text-center text-gray-500 italic">No values to reorder.</div>
               ) : (
                 <DragDropContext onDragEnd={onDragEndValues}>
                   <Droppable droppableId="attr-values">
                     {(provided) => (
-                      <ul
-                        ref={provided.innerRef}
-                        {...provided.droppableProps}
-                        className="space-y-2"
-                      >
+                      <ul ref={provided.innerRef} {...provided.droppableProps} className="space-y-2">
                         {valuesDraft.map((v, i) => (
                           <Draggable key={v.id} draggableId={v.id} index={i}>
                             {(prov) => (
@@ -1472,9 +1238,7 @@ values: valuesDraft.map((v) => ({
                                 className="flex items-center justify-between p-3 rounded-xl border bg-white hover:bg-gray-50"
                               >
                                 <div className="flex items-center gap-3">
-                                  <span className="w-6 h-6 rounded-full border flex items-center justify-center text-xs">
-                                    ⇅
-                                  </span>
+                                  <span className="w-6 h-6 rounded-full border flex items-center justify-center text-xs">⇅</span>
                                   <div>
                                     <div className="font-medium flex items-center gap-2">
                                       <span>{v.name || "—"}</span>
@@ -1485,22 +1249,13 @@ values: valuesDraft.map((v) => ({
                                       )}
                                     </div>
                                     <div className="text-xs text-gray-500 space-y-0.5">
-                                      {v.image_data ? (
-                                        <div className="flex items-center gap-1">
-                                          <span role="img" aria-hidden="true">
-                                            📷
-                                          </span>
-                                          <span>Image attached</span>
-                                        </div>
-                                      ) : null}
-                                      {typeof v.price_delta === "number" &&
-                                      !Number.isNaN(v.price_delta) ? (
+                                      {typeof v.price_delta === "number" && !Number.isNaN(v.price_delta) ? (
                                         <div>
-                                          Price Δ:{" "}
-                                          {v.price_delta > 0 ? "+" : ""}
+                                          Price Δ: {v.price_delta > 0 ? "+" : ""}
                                           {v.price_delta.toFixed(2)}
                                         </div>
                                       ) : null}
+                                      {v.image_url ? <div>📷 Image attached</div> : null}
                                     </div>
                                   </div>
                                 </div>
@@ -1516,16 +1271,10 @@ values: valuesDraft.map((v) => ({
               )}
             </div>
             <div className="p-4 border-t flex justify-end gap-2">
-              <button
-                onClick={closeValues}
-                className="px-4 py-2 rounded-full border hover:bg-gray-50"
-              >
+              <button onClick={closeValues} className="px-4 py-2 rounded-full border hover:bg-gray-50">
                 Cancel
               </button>
-              <button
-                onClick={saveValuesOrder}
-                className="px-4 py-2 rounded-full bg-[#7A1C16] text-white hover:opacity-90"
-              >
+              <button onClick={saveValuesOrder} className="px-4 py-2 rounded-full bg-[#7A1C16] text-white hover:opacity-90">
                 Save Order
               </button>
             </div>
@@ -1535,4 +1284,3 @@ values: valuesDraft.map((v) => ({
     </AdminAuthGuard>
   );
 }
-

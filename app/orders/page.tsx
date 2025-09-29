@@ -1,11 +1,9 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { FaUserAlt, FaShoppingCart, FaBoxOpen } from 'react-icons/fa';
 import { X } from 'lucide-react';
-import Toastify from 'toastify-js';
-import 'toastify-js/src/toastify.css';
 
 // Top / Bottom stack (already in your project)
 import Header from '../components/header';
@@ -19,34 +17,44 @@ import { ChatBot } from '../components/ChatBot';
 import { API_BASE_URL } from '../utils/api';
 
 /* =============================================================================
-   HELPERS (single-file as requested)
+   HELPERS
    ========================================================================== */
 
-// Stable per-browser device UUID
+// Stable per-browser device UUID (guard crypto, localStorage)
 function ensureDeviceUUID(): string {
   if (typeof window === 'undefined') return '';
   const KEY = 'cart_user_id';
-  let id = localStorage.getItem(KEY)?.trim();
-  if (id) return id;
+  try {
+    const existing = localStorage.getItem(KEY)?.trim();
+    if (existing) return existing;
+    // RFC4122-ish v4 with crypto guard
+    const rng = (typeof crypto !== 'undefined' && crypto.getRandomValues)
+      ? crypto.getRandomValues(new Uint8Array(16))
+      : Array.from({ length: 16 }, () => Math.floor(Math.random() * 256));
 
-  // RFC4122-ish v4
-  id = ([1e7] as any + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (c: string) =>
-    (Number(c) ^ ((crypto.getRandomValues(new Uint8Array(1))[0] & 15) >> (Number(c) / 4))).toString(16)
-  );
-  localStorage.setItem(KEY, id);
-  return id;
+    rng[6] = (rng[6] & 0x0f) | 0x40; // version
+    rng[8] = (rng[8] & 0x3f) | 0x80; // variant
+
+    const hex = [...rng].map((b) => b.toString(16).padStart(2, '0')).join('');
+    const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    localStorage.setItem(KEY, id);
+    return id;
+  } catch {
+    return '';
+  }
 }
 
 // Always send keys/headers
 const FRONTEND_KEY = (process.env.NEXT_PUBLIC_FRONTEND_KEY || '').trim();
 function fetchWithKey(url: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers || {});
-  headers.set('X-Frontend-Key', FRONTEND_KEY);
+  if (FRONTEND_KEY) headers.set('X-Frontend-Key', FRONTEND_KEY);
+  headers.set('Accept', 'application/json');
   try {
     const deviceUUID = ensureDeviceUUID();
     if (deviceUUID) headers.set('X-Device-UUID', deviceUUID);
   } catch {}
-  return fetch(url, { ...init, headers });
+  return fetch(url, { ...init, headers, cache: 'no-store' });
 }
 
 // UI helpers
@@ -64,8 +72,6 @@ function AED(amount: number | string) {
 }
 
 // Admin → User mapping
-// Admin statuses: Pending, Processing, Shipped, Completed (and maybe Cancelled)
-// User sees: In Processing, Shipped, Completed
 function userFacingStatus(raw: string) {
   const v = (raw || '').toLowerCase();
   if (v === 'pending' || v === 'processing') return 'In Processing';
@@ -131,7 +137,6 @@ type ShowOrderItemDetail = {
   selection: string;
   math: { base: string; deltas: string[] };
   variant_signature: string;
-  // Newly surfaced by backend (optional typing for safety):
   selected_size?: string;
   selected_attributes_human?: HumanAttr[];
 };
@@ -139,11 +144,7 @@ type ShowOrderEntry = {
   orderID: string;
   Date: string;
   UserName: string;
-  item: {
-    count: number;
-    names: string[];
-    detail: ShowOrderItemDetail[];
-  };
+  item: { count: number; names: string[]; detail: ShowOrderItemDetail[] };
   total: number;
   status: string;
   Address: { street?: string; city?: string; zip?: string };
@@ -179,7 +180,6 @@ function buildReceiptHTML(
       .filter(Boolean)
       .join(', ') || '—';
 
-  // resolve product names
   const lines = items.map((it) => {
     const nm =
       orderDetail?.item?.detail?.find((d) => d.product_id === it.product_id)?.product_name ||
@@ -190,10 +190,9 @@ function buildReceiptHTML(
     return `<li>${nm} (x${qty}) — AED ${(qty * unit).toFixed(2)}</li>`;
   });
 
-  // clean, print-friendly CSS
   const css = `
     *{box-sizing:border-box}
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; color:#111; margin:24px;}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#111;margin:24px;}
     h1{font-size:28px;margin:0 0 12px}
     h2{font-size:20px;margin:20px 0 8px}
     p{margin:4px 0}
@@ -203,9 +202,7 @@ function buildReceiptHTML(
     .total{font-weight:700;margin-top:16px;font-size:18px}
     .divider{height:1px;background:#e5e7eb;margin:16px 0}
     @page{margin:14mm}
-    @media print {
-      a[href]{text-decoration:none}
-    }
+    @media print { a[href]{text-decoration:none} }
   `;
 
   return `
@@ -231,13 +228,30 @@ function buildReceiptHTML(
   <div class="divider"></div>
 
   <h2>Items</h2>
-  <ul>
-    ${lines.join('')}
-  </ul>
+  <ul>${lines.join('')}</ul>
   <p class="total">Total: AED ${(Number(order.total_price) || 0).toFixed(2)}</p>
 </body>
-</html>
-  `.trim();
+</html>`.trim();
+}
+
+/* =============================================================================
+   DYNAMIC TOASTIFY (perf)
+   ========================================================================== */
+
+async function loadToastify(): Promise<any> {
+  // Load JS module
+  const mod = await import('toastify-js');
+  const Toastify = (mod as any).default || mod;
+
+  // Inject CSS once
+  if (typeof document !== 'undefined' && !document.getElementById('toastify-css')) {
+    const link = document.createElement('link');
+    link.id = 'toastify-css';
+    link.rel = 'stylesheet';
+    link.href = 'https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css';
+    document.head.appendChild(link);
+  }
+  return Toastify;
 }
 
 /* =============================================================================
@@ -247,6 +261,8 @@ function buildReceiptHTML(
 export default function OrdersPage() {
   const [loading, setLoading] = useState(true);
   const [orders, setOrders] = useState<SpecificOrder[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
   // Tabs for user: All, In Processing, Shipped, Completed
   const [activeTab, setActiveTab] = useState<'all' | 'processing' | 'shipped' | 'completed'>('all');
 
@@ -259,54 +275,88 @@ export default function OrdersPage() {
   const [selectedOrder, setSelectedOrder] = useState<SpecificOrder | null>(null);
   const [delivery, setDelivery] = useState<DeliveryInfo | null>(null);
 
+  // Modal a11y: focus trap
+  const modalRef = useRef<HTMLDivElement | null>(null);
+  const lastFocusedRef = useRef<HTMLElement | null>(null);
+
+  // Respect reduced motion
+  const prefersReducedMotion =
+    typeof window !== 'undefined' &&
+    window.matchMedia &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // announce area
+  const [announce, setAnnounce] = useState('Loading orders…');
+
   // Initial fetch: device-scoped orders + full order lookups for enrichment
   useEffect(() => {
-    const device_uuid = ensureDeviceUUID();
-    if (!device_uuid) {
-      Toastify({ text: 'Missing device id', duration: 3000, backgroundColor: '#d32f2f' }).showToast();
-      setLoading(false);
-      return;
-    }
+    let canceled = false;
 
     const run = async () => {
       try {
         setLoading(true);
+        setError(null);
+        setAnnounce('Loading orders…');
+
+        const device_uuid = ensureDeviceUUID();
+        if (!device_uuid) {
+          throw new Error('Missing device ID');
+        }
 
         // 1) specific-user-orders (device filter)
-        const url = `${API_BASE_URL}/api/show-specific-user-orders/?device_uuid=${encodeURIComponent(device_uuid)}`;
-        const res = await fetchWithKey(url, { method: 'GET', cache: 'no-store' });
+        const url = `${API_BASE_URL}/api/show-specific-user-orders/?device_uuid=${encodeURIComponent(
+          device_uuid
+        )}`;
+        const res = await fetchWithKey(url, { method: 'GET' });
         const data: SpecificUserOrdersResp = await res.json();
-        if (!res.ok) throw new Error(JSON.stringify(data));
+        if (!res.ok) throw new Error(typeof data === 'string' ? data : 'Failed to load orders');
         const list = Array.isArray(data?.orders) ? data.orders : [];
-        setOrders(list);
+        if (!canceled) setOrders(list);
 
         // 2) show-order (for names, delivery, etc.)
-        const res2 = await fetchWithKey(`${API_BASE_URL}/api/show-order/`, { method: 'GET', cache: 'no-store' });
+        const res2 = await fetchWithKey(`${API_BASE_URL}/api/show-order/`, { method: 'GET' });
         const allOrders: ShowOrderResp = await res2.json();
         if (res2.ok && Array.isArray(allOrders?.orders)) {
           const map: Record<string, ShowOrderEntry> = {};
           const localNameCache: Record<string, string> = {};
           for (const entry of allOrders.orders) {
             map[entry.orderID] = entry;
-            // cache product names
             entry.item?.detail?.forEach((d) => {
-              if (d?.product_id && d?.product_name) {
-                localNameCache[d.product_id] = d.product_name;
-              }
+              if (d?.product_id && d?.product_name) localNameCache[d.product_id] = d.product_name;
             });
           }
-          setOrderDetailMap(map);
-          setNameCache((prev) => ({ ...localNameCache, ...prev }));
+          if (!canceled) {
+            setOrderDetailMap(map);
+            setNameCache((prev) => ({ ...localNameCache, ...prev }));
+          }
         }
-      } catch (e) {
+
+        if (!canceled) setAnnounce('Orders loaded.');
+      } catch (e: any) {
         console.error('Order fetch failed:', e);
-        Toastify({ text: 'Failed to load orders', duration: 3000, backgroundColor: '#d32f2f' }).showToast();
+        if (!canceled) {
+          setError('Failed to load orders');
+          setAnnounce('Failed to load orders.');
+          // lightweight, non-blocking toast
+          loadToastify().then((Toast) =>
+            Toast({
+              text: 'Failed to load orders',
+              duration: 3000,
+              gravity: 'top',
+              position: 'right',
+              style: { background: '#d32f2f' },
+            }).showToast()
+          );
+        }
       } finally {
-        setLoading(false);
+        if (!canceled) setLoading(false);
       }
     };
 
     run();
+    return () => {
+      canceled = true;
+    };
   }, []);
 
   // Filtered list by tab (user semantics)
@@ -323,26 +373,22 @@ export default function OrdersPage() {
 
   // Build items display for table/cards
   function itemsDisplay(o: SpecificOrder) {
-    // Try names from /api/show-order/
     const entry = orderDetailMap[o.order_id];
     let names = (entry?.item?.names || []).filter(Boolean);
-
-    // Fallback: nameCache per product_id; fall back to product_id itself
     if (!names.length) {
       const derived = (o.items || []).map((it) => nameCache[it.product_id] || it.product_id);
       names = derived;
     }
-
-    const joined = (names || []).join(', ');
-    return truncate35(joined);
+    return truncate35((names || []).join(', '));
   }
 
   function totalItems(o: SpecificOrder) {
     return (o.items || []).reduce((acc, it) => acc + (Number(it.quantity) || 0), 0);
   }
 
-  // Open modal + fill delivery section
+  // Modal open/close + delivery fill
   const onView = (o: SpecificOrder) => {
+    lastFocusedRef.current = document.activeElement as HTMLElement | null;
     setSelectedOrder(o);
     const entry = orderDetailMap[o.order_id];
     if (entry) {
@@ -358,6 +404,47 @@ export default function OrdersPage() {
     }
     setModalOpen(true);
   };
+
+  const closeModal = useCallback(() => {
+    setModalOpen(false);
+    // return focus
+    if (lastFocusedRef.current) {
+      lastFocusedRef.current.focus();
+    }
+  }, []);
+
+  // Modal focus trap
+  useEffect(() => {
+    if (!modalOpen) return;
+    const root = modalRef.current;
+    if (!root) return;
+
+    const focusable = root.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeModal();
+      }
+      if (e.key === 'Tab' && focusable.length > 0) {
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    };
+
+    first?.focus();
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [modalOpen, closeModal]);
 
   /* ============================
      Print / Download — SAME HTML
@@ -375,7 +462,9 @@ export default function OrdersPage() {
       a.click();
       URL.revokeObjectURL(url);
     } catch {
-      Toastify({ text: 'Failed to download receipt', duration: 2500, backgroundColor: '#d32f2f' }).showToast();
+      loadToastify().then((Toast) =>
+        Toast({ text: 'Failed to download receipt', duration: 2500, style: { background: '#d32f2f' } }).showToast()
+      );
     }
   }
 
@@ -409,7 +498,9 @@ export default function OrdersPage() {
         setTimeout(() => document.body.removeChild(iframe), 300);
       };
     } catch {
-      Toastify({ text: 'Failed to print receipt', duration: 2500, backgroundColor: '#d32f2f' }).showToast();
+      loadToastify().then((Toast) =>
+        Toast({ text: 'Failed to print receipt', duration: 2500, style: { background: '#d32f2f' } }).showToast()
+      );
     }
   }
 
@@ -450,16 +541,39 @@ export default function OrdersPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 text-black" style={{ fontFamily: 'var(--font-poppins), Arial, Helvetica, sans-serif' }}>
+    <div
+      className="min-h-screen bg-gray-50 text-black"
+      style={{ fontFamily: 'var(--font-poppins), Arial, Helvetica, sans-serif' }}
+    >
+      {/* Skip link for keyboard users */}
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-white focus:text-black focus:px-3 focus:py-2 focus:rounded"
+      >
+        Skip to main content
+      </a>
+
       {/* Top stack */}
       <Header />
       <LogoSection />
       <Navbar />
       <HomePageTop />
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16">
+      <main id="main" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16">
+        {/* Page title for a11y/SEO */}
+        <h1 className="mt-6 text-2xl sm:text-3xl font-semibold text-gray-900">Your Orders</h1>
+
+        {/* Live region for announcements */}
+        <p className="sr-only" aria-live="polite">
+          {announce}
+        </p>
+
         {/* Tabs */}
-        <div className="mt-8 flex flex-wrap gap-2">
+        <div
+          className="mt-6 flex flex-wrap gap-2"
+          role="tablist"
+          aria-label="Filter orders by status"
+        >
           {[
             { key: 'all', label: 'All Orders' },
             { key: 'processing', label: 'In Processing' }, // pending OR processing
@@ -468,10 +582,15 @@ export default function OrdersPage() {
           ].map((t) => (
             <button
               key={t.key}
+              role="tab"
+              aria-selected={activeTab === (t.key as any)}
+              aria-controls={`panel-${t.key}`}
               onClick={() => setActiveTab(t.key as any)}
               className={cn(
-                'px-4 py-2 rounded-full text-sm border transition',
-                activeTab === t.key ? 'bg-[#891F1A] text-white border-[#891F1A]' : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'
+                'px-4 py-2 rounded-full text-sm border transition focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400',
+                activeTab === t.key
+                  ? 'bg-[#891F1A] text-white border-[#891F1A]'
+                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-100'
               )}
             >
               {t.label}
@@ -480,23 +599,32 @@ export default function OrdersPage() {
         </div>
 
         {/* ------------ DESKTOP / TABLET TABLE (md+) ------------ */}
-        <div className="mt-6 bg-white rounded-xl border shadow-sm overflow-hidden hidden md:block">
+        <div
+          id={`panel-${activeTab}`}
+          role="tabpanel"
+          aria-labelledby={activeTab}
+          className="mt-6 bg-white rounded-xl border shadow-sm overflow-hidden hidden md:block"
+        >
           <div className="overflow-x-auto">
             <table className="min-w-full divide-y divide-gray-200 text-sm">
               <thead className="bg-[#891F1A] text-white">
                 <tr>
-                  <th className="px-4 py-3 text-left font-semibold ">Order ID</th>
-                  <th className="px-4 py-3 text-left font-semibold ">Order Items</th>
-                  <th className="px-4 py-3 text-left font-semibold ">Total Items</th>
-                  <th className="px-4 py-3 text-left font-semibold ">Price</th>
-                  <th className="px-4 py-3 text-left font-semibold ">Status</th>
-                  <th className="px-4 py-3 text-left font-semibold ">View</th>
+                  <th scope="col" className="px-4 py-3 text-left font-semibold">Order ID</th>
+                  <th scope="col" className="px-4 py-3 text-left font-semibold">Order Items</th>
+                  <th scope="col" className="px-4 py-3 text-left font-semibold">Total Items</th>
+                  <th scope="col" className="px-4 py-3 text-left font-semibold">Price</th>
+                  <th scope="col" className="px-4 py-3 text-left font-semibold">Status</th>
+                  <th scope="col" className="px-4 py-3 text-left font-semibold">View</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {loading ? (
                   <tr>
                     <td colSpan={6} className="px-4 py-8 text-center text-gray-500">Loading…</td>
+                  </tr>
+                ) : error ? (
+                  <tr>
+                    <td colSpan={6} className="px-4 py-8 text-center text-red-600">{error}</td>
                   </tr>
                 ) : filtered.length === 0 ? (
                   <tr>
@@ -513,7 +641,7 @@ export default function OrdersPage() {
                       <td className="px-4 py-3">
                         <button
                           onClick={() => onView(o)}
-                          className="px-3 py-1.5 text-sm rounded-md border border-gray-300 bg-[#891F1A] text-white hover:bg-[#6e1815]"
+                          className="px-3 py-1.5 text-sm rounded-md border border-gray-300 bg-[#891F1A] text-white hover:bg-[#6e1815] focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
                         >
                           View
                         </button>
@@ -530,6 +658,8 @@ export default function OrdersPage() {
         <div className="mt-6 space-y-3 md:hidden">
           {loading ? (
             <div className="p-6 text-center bg-white rounded-xl border shadow-sm text-gray-500">Loading…</div>
+          ) : error ? (
+            <div className="p-6 text-center bg-white rounded-xl border shadow-sm text-red-600">{error}</div>
           ) : filtered.length === 0 ? (
             <div className="p-6 text-center bg-white rounded-xl border shadow-sm text-gray-500">No orders found.</div>
           ) : (
@@ -537,7 +667,7 @@ export default function OrdersPage() {
               <button
                 key={o.order_id}
                 onClick={() => onView(o)}
-                className="w-full text-left bg-white rounded-xl border shadow-sm p-4 active:scale-[0.99] transition"
+                className="w-full text-left bg-white rounded-xl border shadow-sm p-4 active:scale-[0.99] transition focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
               >
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold">Order#: {o.order_id}</h3>
@@ -563,25 +693,37 @@ export default function OrdersPage() {
         {modalOpen && selectedOrder && (
           <motion.div
             className="fixed inset-0 z-50 flex items-center justify-center p-4"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
+            initial={prefersReducedMotion ? false : { opacity: 0 }}
+            animate={prefersReducedMotion ? undefined : { opacity: 1 }}
+            exit={prefersReducedMotion ? undefined : { opacity: 0 }}
           >
             {/* Backdrop */}
-            <div className="absolute inset-0 bg-black/30" onClick={() => setModalOpen(false)} />
+            <div
+              className="absolute inset-0 bg-black/30"
+              onClick={closeModal}
+              aria-hidden="true"
+            />
 
             {/* Panel */}
             <motion.div
+              ref={modalRef}
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="order-receipt-title"
               className="relative z-10 w-full max-w-3xl"
-              initial={{ scale: 0.98, y: 8, opacity: 0 }}
-              animate={{ scale: 1, y: 0, opacity: 1 }}
-              exit={{ scale: 0.98, y: 8, opacity: 0 }}
-              transition={{ type: 'spring', stiffness: 200, damping: 20 }}
+              initial={prefersReducedMotion ? false : { scale: 0.98, y: 8, opacity: 0 }}
+              animate={prefersReducedMotion ? undefined : { scale: 1, y: 0, opacity: 1 }}
+              exit={prefersReducedMotion ? undefined : { scale: 0.98, y: 8, opacity: 0 }}
+              transition={prefersReducedMotion ? undefined : { type: 'spring', stiffness: 200, damping: 20 }}
             >
               <div className="bg-white rounded-2xl border shadow-xl overflow-hidden">
                 <div className="flex items-center justify-between px-5 py-4 border-b bg-[#891F1A] text-white ">
-                  <h3 className="text-lg font-semibold">Order Receipt</h3>
-                  <button onClick={() => setModalOpen(false)} className="p-1.5 rounded hover:bg-black">
+                  <h3 id="order-receipt-title" className="text-lg font-semibold">Order Receipt</h3>
+                  <button
+                    onClick={closeModal}
+                    className="p-1.5 rounded hover:bg-black focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                    aria-label="Close receipt"
+                  >
                     <X size={18} />
                   </button>
                 </div>
@@ -590,27 +732,27 @@ export default function OrdersPage() {
                   {/* Heading */}
                   <motion.div
                     className="bg-gradient-to-r from-white via-gray-100 to-white px-6 py-5 rounded-xl border shadow-sm"
-                    initial={{ opacity: 0, y: -8 }}
-                    animate={{ opacity: 1, y: 0 }}
+                    initial={prefersReducedMotion ? false : { opacity: 0, y: -8 }}
+                    animate={prefersReducedMotion ? undefined : { opacity: 1, y: 0 }}
                   >
-                    <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 flex items-center gap-2">
+                    <h2 className="text-2xl sm:text-3xl font-bold text-gray-800 flex items-center gap-2">
                       🧾 Order #{selectedOrder.order_id}
-                    </h1>
-                    <p className="text-sm text-gray-200 sm:text-gray-500 mt-1">Placed on {selectedOrder.date}</p>
+                    </h2>
+                    <p className="text-sm text-gray-500 mt-1">Placed on {selectedOrder.date}</p>
                   </motion.div>
 
                   {/* Body */}
                   <motion.div
                     className="bg-white rounded-2xl border shadow-lg p-6 space-y-10 mt-6"
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.1 }}
+                    initial={prefersReducedMotion ? false : { opacity: 0, y: 10 }}
+                    animate={prefersReducedMotion ? undefined : { opacity: 1, y: 0 }}
+                    transition={prefersReducedMotion ? undefined : { delay: 0.1 }}
                   >
                     {/* Customer Info */}
                     <section>
-                      <h2 className="text-lg font-semibold flex items-center gap-2 text-gray-700 mb-3">
-                        <FaUserAlt /> Customer Info
-                      </h2>
+                      <h3 className="text-lg font-semibold flex items-center gap-2 text-gray-700 mb-3">
+                        <FaUserAlt aria-hidden /> Customer Info
+                      </h3>
                       <div className="space-y-1 text-sm text-gray-600 pl-1">
                         <p><strong>Name:</strong> {delivery?.name || '—'}</p>
                         <p><strong>Email:</strong> {delivery?.email || '—'}</p>
@@ -623,9 +765,9 @@ export default function OrdersPage() {
 
                     {/* Items */}
                     <section>
-                      <h2 className="text-lg font-semibold flex items-center gap-2 text-gray-700 mb-3">
-                        <FaShoppingCart /> Ordered Items
-                      </h2>
+                      <h3 className="text-lg font-semibold flex items-center gap-2 text-gray-700 mb-3">
+                        <FaShoppingCart aria-hidden /> Ordered Items
+                      </h3>
                       <ul className="divide-y divide-gray-100 text-sm text-gray-700">
                         {(selectedOrder.items || []).map((it, i) => {
                           const entry = orderDetailMap[selectedOrder.order_id];
@@ -646,14 +788,12 @@ export default function OrdersPage() {
                             <motion.li
                               key={`${it.product_id}-${i}`}
                               className="py-3 flex items-start justify-between gap-4"
-                              initial={{ opacity: 0, x: -10 }}
-                              animate={{ opacity: 1, x: 0 }}
-                              transition={{ delay: i * 0.06 }}
+                              initial={prefersReducedMotion ? false : { opacity: 0, x: -10 }}
+                              animate={prefersReducedMotion ? undefined : { opacity: 1, x: 0 }}
+                              transition={prefersReducedMotion ? undefined : { delay: i * 0.06 }}
                             >
                               <div className="flex-1 min-w-0">
-                                {/* Product title */}
                                 <div className="font-medium text-gray-900 truncate">{nm}</div>
-                                {/* Exact required line under the product */}
                                 <div className="text-xs text-gray-600 mt-0.5">{prettyLine}</div>
                               </div>
                               <div className="font-semibold whitespace-nowrap">
@@ -668,11 +808,11 @@ export default function OrdersPage() {
                       </p>
                     </section>
 
-                    {/* Status (read-only look per your spec) */}
+                    {/* Status */}
                     <section>
-                      <h2 className="text-lg font-semibold flex items-center gap-2 text-gray-700 mb-3">
-                        <FaBoxOpen /> Order Status
-                      </h2>
+                      <h3 className="text-lg font-semibold flex items-center gap-2 text-gray-700 mb-3">
+                        <FaBoxOpen aria-hidden /> Order Status
+                      </h3>
                       <div className="flex flex-col sm:flex-row sm:items-center gap-4">
                         <div>{statusBadge(selectedOrder.status)}</div>
                       </div>
@@ -682,13 +822,13 @@ export default function OrdersPage() {
                     <div className="flex flex-col sm:flex-row gap-3 justify-end">
                       <button
                         onClick={() => printReceipt(selectedOrder)}
-                        className="px-4 py-2 rounded-md border border-gray-300 hover:bg-gray-50"
+                        className="px-4 py-2 rounded-md border border-gray-300 hover:bg-gray-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-300"
                       >
                         Print Receipt
                       </button>
                       <button
                         onClick={() => downloadReceiptHTML(selectedOrder)}
-                        className="px-4 py-2 rounded-md bg-[#891F1A] text-white hover:bg-[#6e1815]"
+                        className="px-4 py-2 rounded-md bg-[#891F1A] text-white hover:bg-[#6e1815] focus:outline-none focus-visible:ring-2 focus-visible:ring-red-300"
                       >
                         Download Receipt
                       </button>

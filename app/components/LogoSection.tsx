@@ -1,5 +1,5 @@
 "use client";
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import Toastify from "toastify-js";
 import "toastify-js/src/toastify.css";
 import { signOut, onAuthStateChanged, User } from "firebase/auth";
@@ -15,7 +15,8 @@ const FRONTEND_KEY = (process.env.NEXT_PUBLIC_FRONTEND_KEY || "").trim();
 const withFrontendKey = (init: RequestInit = {}): RequestInit => {
   const headers = new Headers(init.headers || {});
   if (FRONTEND_KEY) headers.set("X-Frontend-Key", FRONTEND_KEY);
-  return { ...init, headers };
+  headers.set("Accept", "application/json");
+  return { ...init, headers, cache: "no-store" };
 };
 
 /* ===================== Logo helpers ===================== */
@@ -28,7 +29,6 @@ const normalizeLogoUrl = (u?: string): string => {
   if (!v) return LOCAL_LOGO_FALLBACK;
   if (v.startsWith("http://") || v.startsWith("https://")) return v;
   if (v.startsWith("/")) return `${API_BASE_URL}${v}`;
-  // handle "media/..." or "uploads/..." just in case
   if (v.startsWith("media/") || v.startsWith("uploads/")) return `${API_BASE_URL}/${v}`;
   return v;
 };
@@ -114,23 +114,24 @@ function topMatches<T extends { name: string }>(arr: T[], q: string, minScore = 
 
 /* ============================== Component =============================== */
 export default function LogoSection() {
-  // NEW: dynamic logo state
+  // Dynamic logo state (with AbortController + Accept header)
   const [logoUrl, setLogoUrl] = useState<string>(LOCAL_LOGO_FALLBACK);
-
-  // fetch current logo from Show API on mount
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
     (async () => {
       try {
-        const res = await fetch(`${API_BASE_URL}/api/show-logo/?_=${Date.now()}`, withFrontendKey({ cache: "no-store" }));
+        const res = await fetch(
+          `${API_BASE_URL}/api/show-logo/?_=${Date.now()}`,
+          withFrontendKey({ signal: controller.signal })
+        );
         const json: ShowLogoPayload = res.ok ? await res.json() : {};
         const normalized = normalizeLogoUrl(json?.logo?.url);
-        if (!cancelled) setLogoUrl(cacheBust(normalized));
+        setLogoUrl(cacheBust(normalized));
       } catch {
-        if (!cancelled) setLogoUrl(LOCAL_LOGO_FALLBACK);
+        setLogoUrl(LOCAL_LOGO_FALLBACK);
       }
     })();
-    return () => { cancelled = true; };
+    return () => controller.abort();
   }, []);
 
   const [isVisible, setIsVisible] = useState(false);
@@ -167,7 +168,8 @@ export default function LogoSection() {
       setUser(firebaseUser);
       if (firebaseUser) {
         if (pseudoLoggedIn) {
-          setPseudoLoggedIn(false); setPseudoName("");
+          setPseudoLoggedIn(false);
+          setPseudoName("");
           try { localStorage.removeItem("pseudo_session"); } catch {}
         }
         let displayName: string | null = null;
@@ -186,12 +188,17 @@ export default function LogoSection() {
         if (!displayName) displayName = firebaseUser.email?.split("@")[0] || "User";
         setUsername(displayName);
       } else {
-        setUser(null); setUsername(null);
+        setUser(null);
+        setUsername(null);
         try {
           const raw = localStorage.getItem("pseudo_session");
           if (raw) {
             const obj = JSON.parse(raw) as { name: string };
-            if (obj?.name) { setPseudoLoggedIn(true); setPseudoName(obj.name); setUsername(obj.name); }
+            if (obj?.name) {
+              setPseudoLoggedIn(true);
+              setPseudoName(obj.name);
+              setUsername(obj.name);
+            }
           }
         } catch {}
       }
@@ -204,32 +211,35 @@ export default function LogoSection() {
       const raw = localStorage.getItem("pseudo_session");
       if (raw) {
         const obj = JSON.parse(raw) as { name: string };
-        if (obj?.name) { setPseudoLoggedIn(true); setPseudoName(obj.name); setUsername(obj.name); }
+        if (obj?.name) {
+          setPseudoLoggedIn(true);
+          setPseudoName(obj.name);
+          setUsername(obj.name);
+        }
       }
     } catch {}
   }, []);
 
   // Load nav items
   useEffect(() => {
-    let cancelled = false;
     const controller = new AbortController();
     (async () => {
       setLoading(true); setError(null);
       try {
         const res = await fetch(
           `${API_BASE_URL}/api/show_nav_items/?_=${Date.now()}`,
-          withFrontendKey({ signal: controller.signal, cache: "no-store" })
+          withFrontendKey({ signal: controller.signal })
         );
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json: CategoryRaw[] = await res.json();
-        if (!cancelled) setNavData(json || []);
+        setNavData(json || []);
       } catch (err: any) {
-        if (!cancelled) setError(err?.message || "Failed to load items");
+        setError(err?.message || "Failed to load items");
       } finally {
-        if (!cancelled) setLoading(false);
+        setLoading(false);
       }
     })();
-    return () => { cancelled = true; controller.abort(); };
+    return () => controller.abort();
   }, []);
 
   useEffect(() => {
@@ -242,7 +252,10 @@ export default function LogoSection() {
     }
     document.addEventListener("mousedown", handleClickOutside);
     document.addEventListener("keydown", handleEsc);
-    return () => { document.removeEventListener("mousedown", handleClickOutside); document.removeEventListener("keydown", handleEsc); };
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleEsc);
+    };
   }, []);
 
   const openModal = (m: "signup" | "signin") => { setMode(m); setIsVisible(true); };
@@ -273,14 +286,14 @@ export default function LogoSection() {
   const closeModal = () => { setIsVisible(false); void syncAfterModalClose(); };
   const toggleMode = () => setMode((p) => (p === "signin" ? "signup" : "signin"));
 
-  const handleLogout = async () => {
+  const handleLogout = useCallback(async () => {
     try {
       setPseudoLoggedIn(false); setPseudoName(""); setUsername(null);
       try { localStorage.removeItem("pseudo_session"); } catch {}
       await signOut(auth);
       Toastify({ text: "Logged out successfully!", duration: 3000, gravity: "top", position: "right", backgroundColor: "linear-gradient(to right, #ff5f6d, #ffc371)" }).showToast();
     } catch { alert("Error during logout."); }
-  };
+  }, []);
 
   const quickBadges = useMemo<string[]>(() => (navData || []).map((c) => c.name), [navData]);
 
@@ -429,6 +442,8 @@ export default function LogoSection() {
   }, [viewItems, ITEMS_PER_LOAD]);
 
   /* ============================== Render =============================== */
+  const searchListboxId = "search-suggestions";
+
   return (
     <>
       <div
@@ -436,10 +451,10 @@ export default function LogoSection() {
         className="flex-col sm:flex-col lg:flex-row bg-white gap-8 items-center justify-center sm:px-6 lg:px-7 w-full py-4 hidden md:flex"
       >
         <div className="flex flex-row flex-wrap w-full lg:w-[80%] gap-8 items-center">
-          <Link href="/home">
+          <Link href="/home" aria-label="Go to homepage">
             <SafeImg
               src={logoUrl}
-              alt="Site logo"
+              alt="Creative Connect logo"
               className="w-28 sm:w-40 lg:w-[221px] h-auto cursor-pointer"
               width={221}
               height={60}
@@ -453,7 +468,7 @@ export default function LogoSection() {
           </Link>
 
           {/* SEARCH WRAPPER */}
-          <div ref={searchWrapRef} className="relative flex-1 min-w-[220px]">
+          <div ref={searchWrapRef} className="relative flex-1 min-w-[220px]" role="search">
             <div
               className="flex items-center bg-[#F3F3F3] px-3 sm:px-4 py-2 rounded-md gap-3 min-w-0 focus-within:ring-2 focus-within:ring-[#8B1C1C]"
               onClick={() => {
@@ -468,18 +483,21 @@ export default function LogoSection() {
                 onFocus={() => setShowSearch(true)}
                 placeholder={loading ? "Loading items…" : "Type to explore..."}
                 className="flex-1 bg-transparent outline-none text-sm lg:text-base text-[#0E0E0E] placeholder:text-[#0E0E0E] placeholder:opacity-70 font-normal"
-                aria-label="Search"
+                aria-label="Search catalog"
+                aria-controls={searchListboxId}
+                aria-expanded={showSearch}
+                autoComplete="off"
                 disabled={loading}
               />
 
               <button
                 type="button"
-                className="shrink-0 font-medium"
+                className="shrink-0 font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 rounded"
                 aria-label="Search"
               >
                 <img
                   src="https://img.icons8.com/?size=100&id=Y6AAeSVIcpWt&format=png&color=000000"
-                  alt="Search icon"
+                  alt=""
                   width={20}
                   height={20}
                   className="w-5 h-5"
@@ -490,6 +508,7 @@ export default function LogoSection() {
             {/* DROPDOWN */}
             {showSearch && (
               <div
+                id={searchListboxId}
                 className="absolute left-0 right-0 mt-2 w-full bg-white rounded-xl border border-gray-200 shadow-lg z-50"
                 role="listbox"
                 aria-label="Search suggestions"
@@ -537,7 +556,7 @@ export default function LogoSection() {
                 {debouncedQuery ? (
                   <div ref={scrollerRef} className="max-h-96 overflow-y-auto">
                     {visibleItems.length ? (
-                      <ul className="divide-y divide-gray-100">
+                      <ul className="divide-y divide-gray-100" role="presentation">
                         {visibleItems.map((it: any) => {
                           if (it.kind === "header") {
                             const content = (
@@ -572,10 +591,10 @@ export default function LogoSection() {
 
                           // product row
                           return (
-                            <li key={it.key}>
+                            <li key={it.key} role="option">
                               <Link
                                 href={it.href}
-                                className="w-full text-left px-4 py-3 hover:bg-gray-50 flex items-center gap-3"
+                                className="w-full text-left px-4 py-3 hover:bg-gray-50 focus:bg-gray-50 flex items-center gap-3 focus:outline-none"
                               >
                                 <SafeImg
                                   src={it.img}
@@ -629,10 +648,12 @@ export default function LogoSection() {
             <button
               onClick={() => openModal("signin")}
               className="cursor-pointer flex items-center gap-2 bg-[#8B1C1C] hover:bg-[#6f1414] text-white text-xs font-medium px-10 py-1.5 rounded-full transition-all duration-200 shadow-sm hover:shadow-md"
+              aria-label="Open cart (requires sign in)"
+              type="button"
             >
               <img
                 src="https://img.icons8.com/?size=100&id=ii6Lr4KivOiE&format=png&color=FFFFFF"
-                alt="Cart"
+                alt=""
                 width={20}
                 height={20}
                 className="-ml-5 w-5 h-5 left-3"
@@ -643,10 +664,11 @@ export default function LogoSection() {
             <Link
               href="/checkout2"
               className="cursor-pointer flex items-center gap-2 bg-[#8B1C1C] hover:bg-[#6f1414] text-white text-xs font-medium px-10 py-1.5 rounded-full transition-all duration-200 shadow-sm hover:shadow-md"
+              aria-label="Go to cart"
             >
               <img
                 src="https://img.icons8.com/?size=100&id=ii6Lr4KivOiE&format=png&color=FFFFFF"
-                alt="Cart"
+                alt=""
                 width={20}
                 height={20}
                 className="-ml-5 w-5 h-5 left-3"
@@ -658,10 +680,11 @@ export default function LogoSection() {
           <Link
             href="/blog"
             className="cursor-pointer flex items/items-center gap-2 bg-[#8B1C1C] hover:bg-[#6f1414] text-white text-xs font-medium px-10 py-1.5 rounded-full transition-all duration-200 shadow-sm hover:shadow-md -ml-5"
+            aria-label="Open blog"
           >
             <img
               src="https://img.icons8.com/?size=100&id=WX84CKOI9WcJ&format=png&color=FFFFFF"
-              alt="Blog"
+              alt=""
               width={20}
               height={20}
               className="-ml-5 w-5 h-5 left-3"
@@ -669,11 +692,11 @@ export default function LogoSection() {
             <span className="-ml-1 whitespace-nowrap text-sm font-medium text-white">Blog</span>
           </Link>
 
-          <Link href="/contact">
+          <Link href="/contact" aria-label="Contact page">
             <div className="flex gap-3 items-center flex-nowrap">
               <img
                 src="https://img.icons8.com/?size=100&id=Ib9FADThtmSf&format=png&color=000000"
-                alt="Help Centre icon"
+                alt=""
                 width={20}
                 height={20}
                 className="-ml-5 w-5 h-5 left-3"
@@ -687,13 +710,13 @@ export default function LogoSection() {
           <div className="flex gap-2 items-center">
             <img
               src="https://img.icons8.com/?size=100&id=s7eHaFDy5Rqu&format=png&color=000000"
-              alt="UAE icon"
+              alt=""
               width={21}
               height={21}
               className="w-[21px] h-[21px]"
             />
             <span className="-ml-1 whitespace-nowrap text-sm font-medium text-black">
-              <a href="/about">About</a>
+              <Link href="/about" aria-label="About Creative Connect">About</Link>
             </span>
           </div>
 
@@ -703,11 +726,12 @@ export default function LogoSection() {
                 onClick={() => openModal("signin")}
                 className="admin-link focus:outline-none"
                 aria-label="Open login modal"
+                type="button"
               >
                 <div className="flex items-center admin-panel">
                   <img
                     src="https://img.icons8.com/?size=100&id=4kuCnjaqo47m&format=png&color=000000"
-                    alt="Login"
+                    alt=""
                     width={20}
                     height={20}
                     className="mr-1"
@@ -716,17 +740,18 @@ export default function LogoSection() {
                 </div>
               </button>
             ) : (
-              // ================= USER MENU (new) =================
+              // ================= USER MENU =================
               <div className="relative" ref={userMenuRef}>
                 <button
                   onClick={() => setUserMenuOpen((v) => !v)}
                   aria-haspopup="menu"
                   aria-expanded={userMenuOpen}
-                  className="flex items-center gap-2 px-3 py-1.5 rounded-full hover:bg-gray-100 transition"
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-full hover:bg-gray-100 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+                  type="button"
                 >
                   <img
                     src="https://img.icons8.com/?size=100&id=2oz92AdXqQrC&format=png&color=000000"
-                    alt="User Profile"
+                    alt=""
                     width={20}
                     height={20}
                     className="ml-2"
@@ -738,6 +763,7 @@ export default function LogoSection() {
                     viewBox="0 0 20 20"
                     fill="currentColor"
                     className={`w-4 h-4 transition-transform ${userMenuOpen ? "rotate-180" : ""}`}
+                    aria-hidden="true"
                   >
                     <path d="M5.23 7.21a.75.75 0 011.06.02L10 10.217l3.71-3.0a.75.75 0 111.04 1.08l-4.24 3.43a.75.75 0 01-.98 0L5.21 8.29a.75.75 0 01.02-1.08z" />
                   </svg>
@@ -785,6 +811,7 @@ export default function LogoSection() {
                         await handleLogout();
                       }}
                       className="w-full text-left flex items-center gap-3 px-4 py-2.5 hover:bg-gray-50 text-sm text-gray-800"
+                      type="button"
                     >
                       <img
                         src="https://img.icons8.com/?size=100&id=NF9Ee0wdJRR1&format=png&color=8B1C1C"
