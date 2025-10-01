@@ -1,6 +1,13 @@
 'use client';
 
-import React, { useState, useEffect, useRef, useLayoutEffect, useMemo, useCallback } from 'react';
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useMemo,
+  useCallback,
+  useId,
+} from 'react';
 import Link from 'next/link';
 import { FaChevronLeft, FaChevronRight } from 'react-icons/fa';
 import { API_BASE_URL } from '../utils/api';
@@ -46,6 +53,9 @@ const withFrontendKey = (init: RequestInit = {}): RequestInit => {
 
 const norm = (s?: string | number) => (s ?? '').toString().trim().toLowerCase();
 
+const ITEMS_PER_VIEW = 4;
+const GAP_PX = 10;
+
 export default function FirstCarousel() {
   const [carouselRaw, setCarouselRaw] = useState<CarouselDataRaw>({
     title: '',
@@ -58,10 +68,8 @@ export default function FirstCarousel() {
 
   // Slider state
   const [currentIndex, setCurrentIndex] = useState(0);
-  const ITEMS_PER_VIEW = 4;
-  const GAP_PX = 10;
-
   const [cardWidth, setCardWidth] = useState<number>(0);
+
   const trackRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
 
@@ -71,12 +79,12 @@ export default function FirstCarousel() {
   const totalPages = hasImages ? Math.ceil(total / ITEMS_PER_VIEW) : 0;
   const currentPage = hasImages ? Math.floor(currentIndex / ITEMS_PER_VIEW) : 0;
 
-  const prefersReducedMotion =
+  const reduceMotion =
     typeof window !== 'undefined' &&
-    window.matchMedia &&
+    'matchMedia' in window &&
     window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  // Fetch nav + carousel (nav first, because URLs depend on it)
+  // Fetch nav + carousel
   useEffect(() => {
     const baseUrl = `${API_BASE_URL}`.replace(/\/+$/, '');
     const controller = new AbortController();
@@ -91,13 +99,12 @@ export default function FirstCarousel() {
           fetch(`${baseUrl}/api/show_nav_items/?_=${Date.now()}`, withFrontendKey({ signal })),
           fetch(`${baseUrl}/api/first-carousel/?_=${Date.now()}`, withFrontendKey({ signal })),
         ]);
-
         if (signal.aborted) return;
 
         // NAV
         if (navRes.ok) {
           const navJson = await navRes.json();
-          setNavCats(Array.isArray(navJson) ? navJson : []);
+          Array.isArray(navJson) ? setNavCats(navJson) : setNavCats([]);
         } else {
           setNavCats([]);
         }
@@ -105,7 +112,7 @@ export default function FirstCarousel() {
         // CAROUSEL
         if (carRes.ok) {
           const carJson = await carRes.json();
-          const images = Array.isArray(carJson?.images)
+          const images: CarouselImageRaw[] = Array.isArray(carJson?.images)
             ? carJson.images.map((img: any, i: number) => {
                 const raw = typeof img?.src === 'string' ? img.src : '';
                 const src = raw.startsWith('http')
@@ -124,7 +131,7 @@ export default function FirstCarousel() {
                   title: img?.title || `Product ${i + 1}`,
                   caption: img?.caption || '',
                   subcategory: subObj,
-                } as CarouselImageRaw;
+                };
               })
             : [];
 
@@ -134,13 +141,13 @@ export default function FirstCarousel() {
             images,
           });
         } else {
-          setCarouselRaw((prev) => ({ ...prev, images: [] }));
+          setCarouselRaw((prev) => (prev.images.length ? { ...prev, images: [] } : prev));
         }
       } catch (err: any) {
         if (err?.name === 'AbortError') return;
         console.error('❌ Carousel fetch error:', err);
         setError('Failed to load carousel.');
-        setCarouselRaw((prev) => ({ ...prev, images: [] }));
+        setCarouselRaw((prev) => (prev.images.length ? { ...prev, images: [] } : prev));
       } finally {
         if (!signal.aborted) setLoading(false);
       }
@@ -149,7 +156,7 @@ export default function FirstCarousel() {
     return () => controller.abort();
   }, []);
 
-  // Build fast lookup for subcategory → {catUrl, subUrl}
+  // Build fast lookup for subcategory → route
   const subToRoute = useMemo(() => {
     const map = new Map<string, { catUrl: string; subUrl: string }>();
     for (const cat of navCats || []) {
@@ -191,17 +198,18 @@ export default function FirstCarousel() {
 
   // Clamp index if data changes
   useEffect(() => {
-    setCurrentIndex((prev) => Math.min(prev, maxIndex));
+    setCurrentIndex((prev) => (prev > maxIndex ? maxIndex : prev));
   }, [maxIndex]);
 
-  // Measure viewport and compute card width
-  useLayoutEffect(() => {
+  // Measure viewport and compute card width (post-paint to avoid blocking)
+  useEffect(() => {
     const measure = () => {
       if (!viewportRef.current) return;
       const viewportWidth = viewportRef.current.clientWidth;
       const totalGap = GAP_PX * (ITEMS_PER_VIEW - 1);
       const w = Math.max(Math.floor((viewportWidth - totalGap) / ITEMS_PER_VIEW), 0);
-      setCardWidth(w);
+      // avoid needless renders
+      setCardWidth((prev) => (prev !== w ? w : prev));
     };
 
     measure();
@@ -211,12 +219,12 @@ export default function FirstCarousel() {
       ro = new ResizeObserver(measure);
       ro.observe(viewportRef.current);
     } else {
-      window.addEventListener('resize', measure);
+      window.addEventListener('resize', measure, { passive: true } as any);
     }
 
     return () => {
       if (ro && viewportRef.current) ro.unobserve(viewportRef.current);
-      else window.removeEventListener('resize', measure);
+      else window.removeEventListener('resize', measure as any);
     };
   }, []);
 
@@ -227,9 +235,9 @@ export default function FirstCarousel() {
     trackRef.current.style.transform = `translateX(-${offset}px)`;
   }, [currentIndex, cardWidth]);
 
-  const scrollLeft = useCallback(() => setCurrentIndex((prev) => Math.max(0, prev - 1)), []);
+  const scrollLeft = useCallback(() => setCurrentIndex((p) => Math.max(0, p - 1)), []);
   const scrollRight = useCallback(
-    () => setCurrentIndex((prev) => Math.min(maxIndex, prev + 1)),
+    () => setCurrentIndex((p) => Math.min(maxIndex, p + 1)),
     [maxIndex]
   );
   const goToPage = useCallback(
@@ -268,7 +276,7 @@ export default function FirstCarousel() {
     [hasImages, scrollLeft, scrollRight, maxIndex]
   );
 
-  const carouselId = 'first-carousel';
+  const carouselId = useId() || 'first-carousel';
 
   return (
     <section
@@ -283,10 +291,11 @@ export default function FirstCarousel() {
         >
           {carouselRaw.title}
         </h2>
-        <p className="text-[#757575] text-sm font-normal ">{carouselRaw.description}</p>
+        <p className="text-[#757575] text-sm font-normal">{carouselRaw.description}</p>
       </header>
 
-      <div className="relative w-[calc(100%-30px)] sm:-mt-20">
+      {/* Removed negative top margin to prevent CLS */}
+      <div className="relative w-[calc(100%-30px)] md:-mt-15">
         {/* viewport */}
         <div
           ref={viewportRef}
@@ -295,6 +304,7 @@ export default function FirstCarousel() {
           aria-roledescription="carousel"
           aria-label={carouselRaw.title || 'Product carousel'}
           aria-live="polite"
+          aria-busy={loading}
           tabIndex={0}
           onKeyDown={onKeyDown}
         >
@@ -303,8 +313,9 @@ export default function FirstCarousel() {
               ref={trackRef}
               className={
                 'flex items-end gap-[10px] will-change-transform ' +
-                (prefersReducedMotion ? '' : 'transition-transform duration-300 ease-in-out')
+                (reduceMotion ? '' : 'transition-transform duration-300 ease-in-out')
               }
+              // Stabilize initial paint to avoid jump
               style={{ width: cardWidth > 0 ? undefined : '100%' }}
               aria-atomic="false"
             >
@@ -314,13 +325,12 @@ export default function FirstCarousel() {
                   href={item.href}
                   prefetch
                   className="flex-shrink-0 rounded-[10px] overflow-hidden group focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
-                  style={{ width: `${cardWidth}px` }}
+                  style={{ width: cardWidth ? `${cardWidth}px` : undefined }}
                   aria-label={`Go to ${item.title || 'subcategory'} page`}
                 >
                   <div className="w-full aspect-square overflow-hidden rounded-t-md flex items-end">
                     <SafeImg
                       src={item.src}
-                      // Eager-load first viewport set for better LCP
                       loading={index < ITEMS_PER_VIEW ? 'eager' : 'lazy'}
                       decoding="async"
                       width="600"
@@ -347,8 +357,8 @@ export default function FirstCarousel() {
               ))}
             </div>
           ) : (
-            // Lightweight skeleton to stabilize layout (reduces CLS)
-            <div className="w-full flex items-center justify-center">
+            // Skeleton to stabilize layout (reduces CLS)
+            <div className="mt-10 w-full flex items-center justify-center">
               <div className="grid grid-cols-4 gap-[10px] w-full">
                 {Array.from({ length: 4 }).map((_, i) => (
                   <div
@@ -392,18 +402,18 @@ export default function FirstCarousel() {
               onClick={scrollLeft}
               disabled={currentIndex === 0}
               aria-label="Scroll left"
-              className="w-10 h-10 bg-white border-2 border-[#891F1A] text-[#891F1A] rounded-full flex items-center justify-center hover:bg-[#891F1A] hover:text-white transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+              className="w-11 h-11 bg-white border-2 border-[#891F1A] text-[#891F1A] rounded-full flex items-center justify-center hover:bg-[#891F1A] hover:text-white transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
             >
-              <FaChevronLeft />
+              <FaChevronLeft aria-hidden="true" focusable="false" />
             </button>
             <button
               type="button"
               onClick={scrollRight}
               disabled={currentIndex >= maxIndex}
               aria-label="Scroll right"
-              className="w-10 h-10 bg-white border-2 border-[#891F1A] text-[#891F1A] rounded-full flex items-center justify-center hover:bg-[#891F1A] hover:text-white transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
+              className="w-11 h-11 bg-white border-2 border-[#891F1A] text-[#891F1A] rounded-full flex items-center justify-center hover:bg-[#891F1A] hover:text-white transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed font-medium focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400"
             >
-              <FaChevronRight />
+              <FaChevronRight aria-hidden="true" focusable="false" />
             </button>
           </div>
         </nav>
@@ -411,7 +421,11 @@ export default function FirstCarousel() {
 
       {/* SR-only live update for page status */}
       <p className="sr-only" aria-live="polite">
-        {hasImages ? `Page ${currentPage + 1} of ${totalPages}` : loading ? 'Loading carousel…' : error || 'No items'}
+        {hasImages
+          ? `Page ${currentPage + 1} of ${totalPages}`
+          : loading
+          ? 'Loading carousel…'
+          : error || 'No items'}
       </p>
     </section>
   );

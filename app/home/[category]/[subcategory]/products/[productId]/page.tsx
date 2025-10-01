@@ -178,30 +178,17 @@ const censor = (html: string) => {
 const sanitizeHtml = (dirty: string) =>
   DOMPurify.sanitize(dirty, {
     ALLOWED_TAGS: [
-      "b",
-      "strong",
-      "i",
-      "em",
-      "u",
-      "p",
-      "br",
-      "ul",
-      "ol",
-      "li",
-      "span",
-      "a",
-      "div",
-      "img",
-      "h1",
-      "h2",
-      "h3",
-      "h4",
+      "b","strong","i","em","u","p","br","ul","ol","li","span","a","div","img",
+      "h1","h2","h3","h4","h5","h6",
+      "table","thead","tbody","tr","th","td"
     ],
-    ALLOWED_ATTR: ["href", "target", "rel", "src", "alt", "style"],
-    FORBID_TAGS: ["script", "style", "iframe", "object", "embed"],
+    ALLOWED_ATTR: ["href","target","rel","src","alt","style","colspan","rowspan"],
+    FORBID_TAGS: ["script","style","iframe","object","embed"],
     RETURN_TRUSTED_TYPE: false,
   });
 
+
+  
 // Normalize absolute URL
 const toAbsUrl = (src?: string | null) => {
   if (!src) return "";
@@ -268,6 +255,69 @@ const StarRating = ({
     </div>
   );
 };
+// ---- Normalize cards payload to a consistent shape ----
+function normalizeCards(api: any) {
+  // Some APIs send { data: {...} }
+  const src = (api && (api.data || api)) || {};
+
+  // Title keys we will accept for each card
+  const t1 =
+    src.card1_title ??
+    src.card_1_title ??
+    src.title1 ??
+    src.cardOneTitle ??
+    src.card_one_title ??
+    "";
+  const t2 =
+    src.card2_title ??
+    src.card_2_title ??
+    src.title2 ??
+    src.cardTwoTitle ??
+    src.card_two_title ??
+    "";
+  const t3 =
+    src.card3_title ??
+    src.card_3_title ??
+    src.title3 ??
+    src.cardThreeTitle ??
+    src.card_three_title ??
+    "";
+
+  // Content keys we will accept for each card
+  const c1 =
+    src.card1 ??
+    src.card_1 ??
+    src.card1_description ??
+    src.description1 ??
+    src.cardOne ??
+    src.card_one ??
+    "";
+  const c2 =
+    src.card2 ??
+    src.card_2 ??
+    src.card2_description ??
+    src.description2 ??
+    src.cardTwo ??
+    src.card_two ??
+    "";
+  const c3 =
+    src.card3 ??
+    src.card_3 ??
+    src.card3_description ??
+    src.description3 ??
+    src.cardThree ??
+    src.card_three ??
+    "";
+
+  return {
+    card1_title: String(t1 || ""),
+    card1: String(c1 || ""),
+    card2_title: String(t2 || ""),
+    card2: String(c2 || ""),
+    card3_title: String(t3 || ""),
+    card3: String(c3 || ""),
+  };
+}
 
 // ---------- Page ----------
 export default function ProductClonePage() {
@@ -307,7 +357,15 @@ export default function ProductClonePage() {
   const TABS = ["Description", "Details", "Reviews"] as const;
   type Tab = (typeof TABS)[number];
   const [selectedTab, setSelectedTab] = useState<Tab>("Description");
-
+  
+  const [cards, setCards] = useState<{
+  card1_title?: string;
+  card1?: string;
+  card2_title?: string;
+  card2?: string;
+  card3_title?: string;
+  card3?: string;
+}>({});
   // toast
   const [msg, setMsg] = useState<string | null>(null);
   useEffect(() => {
@@ -332,69 +390,79 @@ export default function ProductClonePage() {
       try {
         setLoading(true);
         setNotFound(false);
+const [
+  productRes,
+  imagesRes,
+  variantRes,
+  shippingRes,
+  _seoRes,
+  navRes,
+  attrsRes,
+  cardsRes,
+] = await Promise.all([
+  fetch(
+    `${API_BASE_URL}/api/show_specific_product/`,
+    withFrontendKey({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product_id: productId }),
+    })
+  ),
+  fetch(
+    `${API_BASE_URL}/api/show_product_other_details/`,
+    withFrontendKey({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product_id: productId }),
+    })
+  ),
+  fetch(
+    `${API_BASE_URL}/api/show_product_variant/`,
+    withFrontendKey({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product_id: productId }),
+    })
+  ),
+  fetch(
+    `${API_BASE_URL}/api/show_product_shipping_info/`,
+    withFrontendKey({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product_id: productId }),
+    })
+  ),
+  fetch(
+    `${API_BASE_URL}/api/show_product_seo/`,
+    withFrontendKey({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product_id: productId }),
+    })
+  ),
+  fetch(
+    `${API_BASE_URL}/api/show_nav_items/`,
+    withFrontendKey({ cache: "no-store" })
+  ),
+  fetch(
+    `${API_BASE_URL}/api/show_product_attributes/`,
+    withFrontendKey({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product_id: productId }),
+    })
+  ),
+  // 👇 NEW: Cards API
+  fetch(
+    `${API_BASE_URL}/api/show-product-cards/`,
+    withFrontendKey({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ product_id: productId }),
+    })
+  ),
+]);
 
-        const [
-          productRes,
-          imagesRes,
-          variantRes,
-          shippingRes,
-          _seoRes,
-          navRes,
-          attrsRes,
-        ] = await Promise.all([
-          fetch(
-            `${API_BASE_URL}/api/show_specific_product/`,
-            withFrontendKey({
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ product_id: productId }),
-            })
-          ),
-          fetch(
-            `${API_BASE_URL}/api/show_product_other_details/`,
-            withFrontendKey({
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ product_id: productId }),
-            })
-          ),
-          fetch(
-            `${API_BASE_URL}/api/show_product_variant/`,
-            withFrontendKey({
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ product_id: productId }),
-            })
-          ),
-          fetch(
-            `${API_BASE_URL}/api/show_product_shipping_info/`,
-            withFrontendKey({
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ product_id: productId }),
-            })
-          ),
-          fetch(
-            `${API_BASE_URL}/api/show_product_seo/`,
-            withFrontendKey({
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ product_id: productId }),
-            })
-          ),
-          fetch(
-            `${API_BASE_URL}/api/show_nav_items/`,
-            withFrontendKey({ cache: "no-store" })
-          ),
-          fetch(
-            `${API_BASE_URL}/api/show_product_attributes/`,
-            withFrontendKey({
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ product_id: productId }),
-            })
-          ),
-        ]);
 
         if (!productRes.ok) {
           setNotFound(true);
@@ -413,7 +481,8 @@ export default function ProductClonePage() {
         const variantData = variantRes.ok ? await variantRes.json() : {};
         const shippingData = shippingRes.ok ? await shippingRes.json() : {};
         const navItems = navRes.ok ? await navRes.json() : [];
-
+        const rawCards = cardsRes.ok ? await cardsRes.json() : {};
+        setCards(normalizeCards(rawCards));
         // attributes
         const attrsRaw = attrsRes.ok ? await attrsRes.json() : [];
         const optionDescMap = readOptionShortDescMap();
@@ -866,6 +935,49 @@ const sanitizedDesc = rawDesc ? censor(sanitizeHtml(rawDesc)) : "";
     return masked || "<p>No description available.</p>";
   }, [product?.long_description]);
 
+const shortDescriptionHtml = useMemo(() => {
+  const raw = String(product?.fit_description || "").trim();
+  if (!raw) return "";
+  const sanitized = sanitizeHtml(raw);
+  const masked = censor(sanitized);
+  return stripHtml(masked) ? masked : "";
+}, [product?.fit_description]);
+
+// ---- Cards HTML (sanitize + censor) ----
+const card1Title = cards.card1_title?.trim() || "Product Highlights";
+const card2Title = cards.card2_title?.trim() || "Product Description";
+const card3Title = cards.card3_title?.trim() || "Delivery & Return Policy";
+
+const card1Html = useMemo(() => {
+  const raw = String(cards.card1 || "");
+  const sanitized = sanitizeHtml(raw);
+  return censor(sanitized);
+}, [cards.card1]);
+
+const card2Html = useMemo(() => {
+  // Prefer Card2, fallback to long description already sanitized in descriptionHtml
+  if (cards.card2 && String(cards.card2).trim()) {
+    const sanitized = sanitizeHtml(String(cards.card2));
+    return censor(sanitized);
+  }
+  return descriptionHtml; // already sanitized + censored
+}, [cards.card2, descriptionHtml]);
+
+const card3Html = useMemo(() => {
+  if (cards.card3 && String(cards.card3).trim()) {
+    const sanitized = sanitizeHtml(String(cards.card3));
+    return censor(sanitized);
+  }
+  // Default fallback text if Card3 not set
+  const fallback = `
+    <p>Free shipping on all orders. COD incurs a flat AED 250/product. No returns on customized items. All deliveries are contactless. Check FAQ for full policy.</p>
+    <p class="mt-2">Processing time: within ${String(
+      shippingInfo?.processing_time || "3–5"
+    )} days.</p>
+  `;
+  return censor(sanitizeHtml(fallback));
+}, [cards.card3, shippingInfo?.processing_time]);
+
 
   // --- WhatsApp link ---
   const handleWhatsApp = () => {
@@ -1196,6 +1308,15 @@ const sanitizedDesc = rawDesc ? censor(sanitizeHtml(rawDesc)) : "";
                 <h1 className="text-[22px] font-semibold leading-tight">
                   {product.name}
                 </h1>
+             {shortDescriptionHtml && (
+  <Reveal delay={0.03}>
+    <div
+      className="mt-2 text-[12px] leading-6 text-zinc-600"
+      dangerouslySetInnerHTML={{ __html: shortDescriptionHtml }}
+    />
+  </Reveal>
+)}
+
               </Reveal>
               <Reveal delay={0.05}>
                 <div className="mt-2 flex items-center gap-2">
@@ -1503,42 +1624,35 @@ const hasShortDesc = stripHtml(optionDescHtml).length > 0;
                 className="grid gap-4 p-4 md:grid-cols-3"
               >
                 <Reveal delay={0.05} className="rounded-md bg-zinc-100 p-5">
-                  <h3 className="mb-3 text-[13px] font-semibold text-zinc-700">
-                    Product Highlights
-                  </h3>
-                  <ul className="space-y-2 text-[12px] text-zinc-600">
-                    <li>• Advanced printing technology</li>
-                    <li>• Premium materials</li>
-                    <li>• Unique & affordable</li>
-                    <li>• Long-lasting colors</li>
-                    <li>• 7-day refund window</li>
-                  </ul>
-                </Reveal>
+  <h3 className="mb-3 text-[13px] font-semibold text-zinc-700">
+    {card1Title}
+  </h3>
+  <div
+    className="text-[12px] text-zinc-600 leading-6 space-y-2 [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-6"
+    dangerouslySetInnerHTML={{ __html: card1Html || "<p>—</p>" }}
+  />
+</Reveal>
 
-                <Reveal delay={0.1} className="rounded-md bg-zinc-100 p-5">
-                  <h3 className="mb-3 text-[13px] font-semibold text-zinc-700">
-                    Product Description
-                  </h3>
-                  <div
-                    className="text-[12px] text-zinc-600 leading-6 space-y-2 [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-6"
-                    dangerouslySetInnerHTML={{ __html: descriptionHtml }}
-                  />
-                </Reveal>
+<Reveal delay={0.1} className="rounded-md bg-zinc-100 p-5">
+  <h3 className="mb-3 text-[13px] font-semibold text-zinc-700">
+    {card2Title}
+  </h3>
+  <div
+    className="text-[12px] text-zinc-600 leading-6 space-y-2 [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-6"
+    dangerouslySetInnerHTML={{ __html: card2Html || "<p>—</p>" }}
+  />
+</Reveal>
 
-                <Reveal delay={0.15} className="rounded-md bg-zinc-100 p-5">
-                  <h3 className="mb-3 text-[13px] font-semibold text-zinc-700">
-                    Delivery & Return Policy
-                  </h3>
-                  <p className="text-[12px] leading-6 text-zinc-600">
-                    Free shipping on all orders. COD incurs a flat AED
-                    250/product. No returns on customized items. All deliveries
-                    are contactless. Check FAQ for full policy.
-                  </p>
-                  <div className="mt-3 text-[12px] text-zinc-600">
-                    Processing time: within{" "}
-                    {shippingInfo?.processing_time || "3–5"} days.
-                  </div>
-                </Reveal>
+<Reveal delay={0.15} className="rounded-md bg-zinc-100 p-5">
+  <h3 className="mb-3 text-[13px] font-semibold text-zinc-700">
+    {card3Title}
+  </h3>
+  <div
+    className="text-[12px] text-zinc-600 leading-6 space-y-2 [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-6"
+    dangerouslySetInnerHTML={{ __html: card3Html || "<p>—</p>" }}
+  />
+</Reveal>
+
               </div>
             )}
 

@@ -1,6 +1,15 @@
+// Front_End/app/components/LoginModal.tsx
+
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import React, {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useCallback,
+  useId,
+} from "react";
 import { auth, googleProvider } from "../lib/firebase";
 import {
   createUserWithEmailAndPassword,
@@ -19,6 +28,9 @@ import { toast } from "react-toastify";
 import { API_BASE_URL } from "../utils/api";
 import { SafeImg } from "./SafeImage";
 
+/* ──────────────────────────────────────────────────────────
+   Types
+   ────────────────────────────────────────────────────────── */
 type AuthMode = "signup" | "signin";
 
 type LoginModalProps = {
@@ -33,24 +45,24 @@ type LoginModalProps = {
 };
 
 /* ──────────────────────────────────────────────────────────
-   Frontend key helper
+   Frontend key helper (avoid per-render env reads)
    ────────────────────────────────────────────────────────── */
 const FRONTEND_KEY = (process.env.NEXT_PUBLIC_FRONTEND_KEY || "").trim();
 const withFrontendKey = (init: RequestInit = {}): RequestInit => {
   const headers = new Headers(init.headers || {});
   if (FRONTEND_KEY) headers.set("X-Frontend-Key", FRONTEND_KEY);
-  return { ...init, headers };
+  return { ...init, headers, cache: "no-store" };
 };
 
 /* ──────────────────────────────────────────────────────────
-   Local icon assets (avoid third-party hosts -> better perf)
-   Place small 20px PNG/SVGs in /public/icons
+   Local icon assets (sized to prevent CLS)
    ────────────────────────────────────────────────────────── */
 const ICONS = {
-  user: "/icons/user.png",
-  email: "/icons/email.png",
-  lock: "/icons/lock.png",
-};
+  user: { src: "/icons/user.png", w: 20, h: 20 },
+  email: { src: "/icons/email.png", w: 20, h: 20 },
+  lock: { src: "/icons/lock.png", w: 20, h: 20 },
+  google: { src: "/images/google.svg", w: 20, h: 20 },
+} as const;
 
 /* ──────────────────────────────────────────────────────────
    Validators
@@ -67,8 +79,8 @@ const VERIFICATION_CONTINUE_URL =
   (typeof window !== "undefined" ? window.location.origin : "https://app.click2print.store");
 
 /* Humanize Firebase errors */
-const humanizeFirebaseError = (err: any): string => {
-  const msg = String(err?.message || err?.code || "Auth error").toLowerCase();
+const humanizeFirebaseError = (err: unknown): string => {
+  const msg = String((err as any)?.message || (err as any)?.code || "Auth error").toLowerCase();
   if (msg.includes("email-already-in-use")) return "Email already in use. Please sign in.";
   if (msg.includes("invalid-email")) return "Invalid email address.";
   if (msg.includes("weak-password")) return "Password is too weak. Use a stronger one.";
@@ -95,7 +107,7 @@ const LoginModal: React.FC<LoginModalProps> = ({
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
 
-  // ✅ Privacy Policy acceptance (required for signup)
+  // Privacy Policy acceptance (required for signup)
   const [acceptedPolicy, setAcceptedPolicy] = useState(false);
 
   // Username uniqueness (signup)
@@ -120,13 +132,17 @@ const LoginModal: React.FC<LoginModalProps> = ({
   const dialogRef = useRef<HTMLDivElement>(null);
   const firstInputRef = useRef<HTMLInputElement>(null);
 
+  // Unique IDs for helper text (a11y)
+  const idUsernameHelp = useId();
+  const idEmailHelp = useId();
+
+  /* ── Modal lifecycle: lock scroll, focus, focus trap ── */
   useEffect(() => {
     if (!isVisible) return;
-    // lock scroll
-    const prev = document.body.style.overflow;
+    const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
-    // focus first control
-    firstInputRef.current?.focus();
+    // Microtask to ensure element is present before focus
+    queueMicrotask(() => firstInputRef.current?.focus());
 
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -134,7 +150,7 @@ const LoginModal: React.FC<LoginModalProps> = ({
       const root = dialogRef.current;
       if (!root) return;
       const focusables = root.querySelectorAll<HTMLElement>(
-        'button, [href], input, textarea, select, [tabindex]:not([tabindex="-1"])'
+        'button,[href],input,textarea,select,[tabindex]:not([tabindex="-1"])'
       );
       if (!focusables.length) return;
       const first = focusables[0];
@@ -150,7 +166,7 @@ const LoginModal: React.FC<LoginModalProps> = ({
 
     document.addEventListener("keydown", handleKey);
     return () => {
-      document.body.style.overflow = prev;
+      document.body.style.overflow = prevOverflow;
       document.removeEventListener("keydown", handleKey);
     };
   }, [isVisible, onClose]);
@@ -158,16 +174,17 @@ const LoginModal: React.FC<LoginModalProps> = ({
   // Reset policy checkbox when switching modes
   useEffect(() => {
     setAcceptedPolicy(false);
+    setAwaitingVerification(false);
   }, [mode]);
 
-  // Keep external refs in sync
+  // Keep external refs in sync (uncontrolled consumers)
   useEffect(() => {
     if (nameRef.current) nameRef.current.value = name;
     if (emailRef.current) emailRef.current.value = identifier;
     if (passwordRef.current) passwordRef.current.value = password;
   }, [name, identifier, password, nameRef, emailRef, passwordRef]);
 
-  // Debounced username check (backend) with abort safety
+  /* ── Debounced username check ── */
   useEffect(() => {
     if (!isSignup) {
       setNameUnique(null);
@@ -175,7 +192,8 @@ const LoginModal: React.FC<LoginModalProps> = ({
       nameAbortRef.current?.abort();
       return;
     }
-    if (!name.trim()) {
+    const trimmed = name.trim();
+    if (!trimmed) {
       setNameUnique(null);
       setNameCheckLoading(false);
       nameAbortRef.current?.abort();
@@ -189,12 +207,14 @@ const LoginModal: React.FC<LoginModalProps> = ({
         nameAbortRef.current?.abort();
         const controller = new AbortController();
         nameAbortRef.current = controller;
+
         const res = await fetch(`${API_BASE_URL}/api/show-user/`, withFrontendKey({ signal: controller.signal }));
         const data = await res.json();
         const exists = (data?.users || []).some(
           (u: any) =>
-            (u.username || u.first_name || "").toLowerCase().trim() ===
-            name.toLowerCase().trim()
+            (u.username || u.first_name || "")
+              .toLowerCase()
+              .trim() === trimmed.toLowerCase()
         );
         setNameUnique(!exists);
       } catch {
@@ -202,14 +222,14 @@ const LoginModal: React.FC<LoginModalProps> = ({
       } finally {
         setNameCheckLoading(false);
       }
-    }, 300);
+    }, 320); // light debounce to reduce main-thread churn
 
     return () => {
       if (nameDebounceTimer.current) window.clearTimeout(nameDebounceTimer.current);
     };
   }, [name, isSignup]);
 
-  // Debounced email check during SIGNUP (backend + Firebase) with abort safety
+  /* ── Debounced email check (backend + Firebase) ── */
   useEffect(() => {
     if (!isSignup) {
       setEmailUnique(null);
@@ -256,14 +276,14 @@ const LoginModal: React.FC<LoginModalProps> = ({
       } finally {
         setEmailCheckLoading(false);
       }
-    }, 350);
+    }, 340);
 
     return () => {
       if (emailDebounceTimer.current) window.clearTimeout(emailDebounceTimer.current);
     };
   }, [identifier, isSignup]);
 
-  // Gating
+  /* ── Gating ── */
   const canSubmit = useMemo(() => {
     if (isSignup) {
       const base = name.trim().length > 0 && isValidEmail(identifier) && password.length > 0;
@@ -275,14 +295,8 @@ const LoginModal: React.FC<LoginModalProps> = ({
     return hasId && password.length > 0;
   }, [isSignup, name, identifier, password, nameUnique, emailUnique, acceptedPolicy]);
 
-  // --------- Backend / Firestore write-through (NO PASSWORDS SENT) ----------
-  const saveUserToBackend = async ({
-    user_id,
-    email,
-    username,
-    name,
-    is_verified,
-  }: {
+  /* ── Backend / Firestore write-through (NO PASSWORDS SENT) ── */
+  const saveUserToBackend = async (payload: {
     user_id: string;
     email: string;
     username: string;
@@ -294,47 +308,35 @@ const LoginModal: React.FC<LoginModalProps> = ({
       withFrontendKey({
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id, email, username, name, is_verified }),
+        body: JSON.stringify(payload),
       })
     );
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      const msg = data?.error || "Backend save failed";
+      const msg = (data as any)?.error || "Backend save failed";
       if (String(msg).toLowerCase().includes("unique")) return; // ignore uniqueness race
       throw new Error(msg);
     }
   };
 
-  const updateUserInBackend = async ({
-    user_id,
-    email,
-    username,
-    name,
-    is_verified,
-  }: {
+  const updateUserInBackend = async (payload: {
     user_id: string;
     email?: string;
     username?: string;
     name?: string;
     is_verified?: boolean;
   }) => {
-    const body: any = { user_id };
-    if (email !== undefined) body.email = email;
-    if (username !== undefined) body.username = username;
-    if (name !== undefined) body.name = name;
-    if (is_verified !== undefined) body.is_verified = is_verified;
-
     const response = await fetch(
       `${API_BASE_URL}/api/edit-user/`,
       withFrontendKey({
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify(payload),
       })
     );
     if (!response.ok) {
       const data = await response.json().catch(() => ({}));
-      throw new Error(data?.error || "Backend update failed");
+      throw new Error((data as any)?.error || "Backend update failed");
     }
   };
 
@@ -355,13 +357,12 @@ const LoginModal: React.FC<LoginModalProps> = ({
       });
     } catch (err) {
       // Non-fatal
-      // eslint-disable-next-line no-console
       console.error("Firestore save error:", err);
     }
   };
 
-  // Google sign-in (enforce verified email)
-  const handleGoogleLogin = async () => {
+  /* ── Google sign-in (enforce verified email) ── */
+  const handleGoogleLogin = useCallback(async () => {
     try {
       setIsSubmitting(true);
       const result = await signInWithPopup(auth, googleProvider);
@@ -394,18 +395,16 @@ const LoginModal: React.FC<LoginModalProps> = ({
       await onAuth();
       onClose();
     } catch (error) {
-      // eslint-disable-next-line no-console
       console.error("Google sign-in error:", error);
       toast.error(humanizeFirebaseError(error));
     } finally {
       setIsSubmitting(false);
     }
-  };
+  }, [onAuth, onClose]);
 
-  const resolveEmailForIdentifier = async (idRaw: string) => {
+  const resolveEmailForIdentifier = useCallback(async (idRaw: string) => {
     const id = idRaw.trim();
     if (isValidEmail(id)) return id;
-    // username -> email via backend
     try {
       const usersRes = await fetch(`${API_BASE_URL}/api/show-user/`, withFrontendKey());
       const usersData = await usersRes.json();
@@ -417,10 +416,10 @@ const LoginModal: React.FC<LoginModalProps> = ({
     } catch {
       return "";
     }
-  };
+  }, []);
 
   // Resend + recheck verification
-  const resendVerification = async () => {
+  const resendVerification = useCallback(async () => {
     const user = auth.currentUser;
     if (!user) {
       toast.error("No user session to verify.");
@@ -430,33 +429,35 @@ const LoginModal: React.FC<LoginModalProps> = ({
       await sendEmailVerification(user, { url: VERIFICATION_CONTINUE_URL });
       toast.success(`Verification email sent to ${user.email}.`);
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.error(e);
       toast.error("Failed to send verification email.");
     }
-  };
+  }, []);
 
-  const finalizeSignupAfterVerification = async (user: User, username: string) => {
-    try {
-      await saveUserToFirestore({ user_id: user.uid, name: username, email: user.email || "" });
-    } catch {}
-    try {
-      await saveUserToBackend({
-        user_id: user.uid,
-        email: user.email || "",
-        username: username || user.email || user.uid,
-        name: username,
-        is_verified: true,
-      });
-    } catch (e: any) {
-      const msg = String(e?.message || "");
-      if (!msg.toLowerCase().includes("unique")) throw e;
-    }
-    await onAuth();
-    onClose();
-  };
+  const finalizeSignupAfterVerification = useCallback(
+    async (user: User, username: string) => {
+      try {
+        await saveUserToFirestore({ user_id: user.uid, name: username, email: user.email || "" });
+      } catch {}
+      try {
+        await saveUserToBackend({
+          user_id: user.uid,
+          email: user.email || "",
+          username: username || user.email || user.uid,
+          name: username,
+          is_verified: true,
+        });
+      } catch (e: any) {
+        const msg = String(e?.message || "");
+        if (!msg.toLowerCase().includes("unique")) throw e;
+      }
+      await onAuth();
+      onClose();
+    },
+    [onAuth, onClose]
+  );
 
-  const recheckVerification = async () => {
+  const recheckVerification = useCallback(async () => {
     const user = auth.currentUser;
     if (!user) {
       toast.error("No user session.");
@@ -472,14 +473,13 @@ const LoginModal: React.FC<LoginModalProps> = ({
         toast.info("Still not verified. Check your inbox or resend.");
       }
     } catch (e) {
-      // eslint-disable-next-line no-console
       console.error(e);
       toast.error("Could not refresh verification state.");
     }
-  };
+  }, [finalizeSignupAfterVerification, name]);
 
   // Forgot password (from modal)
-  const handleForgotPassword = async () => {
+  const handleForgotPassword = useCallback(async () => {
     const id = identifier.trim();
     const email = isValidEmail(id) ? id : await resolveEmailForIdentifier(id);
     if (!email) {
@@ -490,13 +490,12 @@ const LoginModal: React.FC<LoginModalProps> = ({
       await sendPasswordResetEmail(auth, email);
       toast.success(`Password reset link sent to ${email}`);
     } catch (e: any) {
-      // eslint-disable-next-line no-console
       console.error(e);
       toast.error(humanizeFirebaseError(e));
     }
-  };
+  }, [identifier, resolveEmailForIdentifier]);
 
-  const handleAuth = async () => {
+  const handleAuth = useCallback(async () => {
     if (isSignup) {
       if (!name.trim()) return toast.error("Username is required.");
       if (!isValidEmail(identifier)) return toast.error("Enter a valid email.");
@@ -522,7 +521,6 @@ const LoginModal: React.FC<LoginModalProps> = ({
           const result = await createUserWithEmailAndPassword(auth, email, password);
           createdUser = result.user;
         } catch (e) {
-          // eslint-disable-next-line no-console
           console.error("Firebase signup failed:", e);
           toast.error(humanizeFirebaseError(e));
           return;
@@ -536,7 +534,6 @@ const LoginModal: React.FC<LoginModalProps> = ({
           setVerifEmail(createdUser.email || email);
           return; // Wait until verified; persist after verification
         } catch (e) {
-          // eslint-disable-next-line no-console
           console.error("sendEmailVerification error:", e);
           toast.error("Failed to send verification email. Try again later.");
           return;
@@ -602,14 +599,25 @@ const LoginModal: React.FC<LoginModalProps> = ({
         }
       }
     } catch (error) {
-      // eslint-disable-next-line no-console
       console.error("Auth error:", error);
       toast.error(isSignup ? "Sign-up failed." : "Sign-in failed.");
     } finally {
       setIsSubmitting(false);
     }
-  };
+  }, [
+    acceptedPolicy,
+    emailUnique,
+    nameUnique,
+    identifier,
+    isSignup,
+    name,
+    password,
+    resolveEmailForIdentifier,
+    onAuth,
+    onClose,
+  ]);
 
+  /* ── Styling helpers ── */
   const inputClass = useCallback(
     (active: boolean) =>
       `w-full p-3 border rounded-md focus:outline-none focus:ring-2 mb-2 ${
@@ -637,6 +645,7 @@ const LoginModal: React.FC<LoginModalProps> = ({
     >
       <div
         ref={dialogRef}
+        role="document"
         className="w-full max-w-[860px] rounded-[20px] overflow-hidden bg-white flex flex-col md:flex-row shadow-[0_0_30px_rgba(0,0,0,0.2)]"
       >
         {/* Left Panel */}
@@ -671,13 +680,11 @@ const LoginModal: React.FC<LoginModalProps> = ({
           <h3 className="text-[22px] md:text-[26px] font-semibold mb-4 md:mb-5">
             {isSignup ? (
               <>
-                Create Account{" "}
-                <SafeImg src={ICONS.user} alt="" className="inline-block w-5 h-5 align-middle" loading="lazy" />
+                Create Account
               </>
             ) : (
               <>
-                Sign In{" "}
-                <SafeImg src={ICONS.lock} alt="" className="inline-block w-7 h-7 align-middle" loading="lazy" />
+                Sign In
               </>
             )}
           </h3>
@@ -698,10 +705,12 @@ const LoginModal: React.FC<LoginModalProps> = ({
               <div className="w-full">
                 <div className="relative w-full">
                   <SafeImg
-                    src={ICONS.user}
+                    src="https://img.icons8.com/?size=100&id=98957&format=png&color=000000"
                     alt=""
-                    className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 pointer-events-none"
+                    className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none mt-6"
                     loading="lazy"
+                    width={ICONS.user.w}
+                    height={ICONS.user.h}
                   />
                   <input
                     ref={(el) => {
@@ -715,13 +724,20 @@ const LoginModal: React.FC<LoginModalProps> = ({
                     required
                     aria-required="true"
                     aria-invalid={nameUnique === false}
+                    aria-describedby={isSignup ? idUsernameHelp : undefined}
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     autoComplete="username"
+                    inputMode="text"
                   />
                 </div>
                 {name ? (
-                  <div className="w-full text-left text-xs mb-2" role="status" aria-live="polite">
+                  <div
+                    id={idUsernameHelp}
+                    className="w-full text-left text-xs mb-2"
+                    role="status"
+                    aria-live="polite"
+                  >
                     {nameCheckLoading ? (
                       <span className="opacity-70">Checking availability…</span>
                     ) : nameUnique === false ? (
@@ -736,10 +752,12 @@ const LoginModal: React.FC<LoginModalProps> = ({
 
             <div className="relative w-full">
               <SafeImg
-                src={ICONS.email}
+                src="https://img.icons8.com/?size=100&id=60688&format=png&color=000000"
                 alt=""
-                className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 pointer-events-none"
+                className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none mt-6"
                 loading="lazy"
+                width={ICONS.email.w}
+                height={ICONS.email.h}
               />
               <input
                 ref={(el) => {
@@ -756,13 +774,14 @@ const LoginModal: React.FC<LoginModalProps> = ({
                 aria-invalid={
                   isSignup ? (identifier.length > 0 && !isValidEmail(identifier)) || emailUnique === false : false
                 }
+                aria-describedby={isSignup ? idEmailHelp : undefined}
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
                 inputMode={isSignup ? "email" : "text"}
               />
             </div>
             {isSignup && identifier ? (
-              <div className="w-full text-left text-xs mb-2" role="status" aria-live="polite">
+              <div id={idEmailHelp} className="w-full text-left text-xs mb-2" role="status" aria-live="polite">
                 {!isValidEmail(identifier) ? (
                   <span className="text-red-600">Enter a valid email</span>
                 ) : emailCheckLoading ? (
@@ -777,10 +796,12 @@ const LoginModal: React.FC<LoginModalProps> = ({
 
             <div className="relative w-full">
               <SafeImg
-                src={ICONS.lock}
+                src="https://img.icons8.com/?size=100&id=3okL4g49Zmey&format=png&color=000000"
                 alt=""
-                className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 pointer-events-none"
+                className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none mt-6"
                 loading="lazy"
+                width={ICONS.lock.w}
+                height={ICONS.lock.h}
               />
               <input
                 ref={passwordRef}
@@ -794,10 +815,11 @@ const LoginModal: React.FC<LoginModalProps> = ({
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 minLength={6}
+                inputMode="text"
               />
             </div>
 
-            {/* 🔗 Forgot password inline helper */}
+            {/* Forgot password */}
             {!isSignup && (
               <div className="w-full text-right -mt-1 mb-3">
                 <button
@@ -805,15 +827,15 @@ const LoginModal: React.FC<LoginModalProps> = ({
                   onClick={handleForgotPassword}
                   className="text-xs text-[#891F1A] underline hover:text-red-600"
                 >
-                  Forget Password
+                  Forgot password
                 </button>
               </div>
             )}
 
-            {/* ✅ Privacy Policy consent */}
+            {/* Privacy Policy consent */}
             {isSignup && (
               <div className="w-full mt-2 mb-4 text-left">
-                <label className="relative inline-flex items-start gap-3 cursor-pointer select-none">
+                <label htmlFor="accept-privacy" className="relative inline-flex items-start gap-3 cursor-pointer select-none">
                   <input
                     id="accept-privacy"
                     type="checkbox"
@@ -833,7 +855,7 @@ const LoginModal: React.FC<LoginModalProps> = ({
                       <path d="M3 8.5l3 3 7-7" fill="none" stroke="white" strokeWidth="2" />
                     </svg>
                   </span>
-                  <span className="text-xs md:text-sm leading-5 text-black-500">
+                  <span className="text-xs md:text-sm leading-5 text-black">
                     I verify that I accept{" "}
                     <a
                       href="/privacy-policy"
@@ -857,12 +879,12 @@ const LoginModal: React.FC<LoginModalProps> = ({
                 aria-label="Sign in with Google"
               >
                 <SafeImg
-                  src="/images/google.svg"
+                  src={ICONS.google.src}
                   alt=""
-                  className="w-5 h-5"
+                  className=""
                   loading="lazy"
-                  width={20}
-                  height={20}
+                  width={ICONS.google.w}
+                  height={ICONS.google.h}
                 />
                 <span className="text-sm font-normal text-black">Sign in with Google</span>
               </button>
@@ -910,7 +932,11 @@ const LoginModal: React.FC<LoginModalProps> = ({
                 then click “I’ve verified” below.
               </div>
               <div className="flex gap-2">
-                <button type="button" onClick={resendVerification} className="px-3 py-2 border rounded-md hover:bg-white">
+                <button
+                  type="button"
+                  onClick={resendVerification}
+                  className="px-3 py-2 border rounded-md hover:bg-white"
+                >
                   Resend
                 </button>
                 <button

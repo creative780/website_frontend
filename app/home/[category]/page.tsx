@@ -1,20 +1,31 @@
 'use client';
 
-import React, { useEffect, useMemo, useState, use } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
-import Navbar from '../../components/Navbar';
-import SecondCarousel from '../../components/second_carousel';
-import Header from '../../components/header';
-import LogoSection from '../../components/LogoSection';
-import Footer from '../../components/Footer';
-import HomePageTop from '../../components/HomePageTop';
-import { API_BASE_URL } from '../../utils/api';
-import { ChatBot } from '../../components/ChatBot';
-import { SafeImg } from '../../components/SafeImage';
+import Head from 'next/head';
+import dynamic from 'next/dynamic';
 import DOMPurify from 'isomorphic-dompurify';
+import { API_BASE_URL } from '../../utils/api';
+import { SafeImg } from '../../components/SafeImage';
+
+/** ==== Lazy-load strictly non-critical UI to cut LCP/TBT ==== */
+const Header = dynamic(() => import('../../components/header'), { ssr: false });
+const LogoSection = dynamic(() => import('../../components/LogoSection'), { ssr: false });
+const Navbar = dynamic(() => import('../../components/Navbar'), { ssr: false });
+const HomePageTop = dynamic(() => import('../../components/HomePageTop'), { ssr: false });
+const SecondCarousel = dynamic(() => import('../../components/second_carousel'), {
+  ssr: false,
+  loading: () => <div aria-hidden className="h-[220px] w-full bg-gray-50" />,
+});
+const Footer = dynamic(() => import('../../components/Footer'), {
+  ssr: false,
+  loading: () => <div aria-hidden className="h-[160px] w-full bg-gray-50" />,
+});
+const ChatBot = dynamic(() => import('../../components/ChatBot').then((m) => m.ChatBot), { ssr: false });
 
 /** ==== Types ==== */
 interface Props {
+  // Match App Router’s client entry typing: params is a Promise
   params: Promise<{ category: string }>;
 }
 
@@ -55,7 +66,10 @@ const fetchWithKey = (url: string, init: RequestInit = {}) => {
   const headers = new Headers(init.headers || {});
   if (FRONTEND_KEY) headers.set('X-Frontend-Key', FRONTEND_KEY);
   headers.set('Accept', 'application/json');
-  return fetch(url, { ...init, headers, cache: 'no-store' });
+  // Use default caching for GETs; avoid 'no-store' unless truly necessary
+  const method = (init.method || 'GET').toUpperCase();
+  const cache: RequestCache | undefined = method === 'GET' ? 'force-cache' : undefined;
+  return fetch(url, { ...init, headers, cache });
 };
 
 /** ==== HTML sanitizer (safe links, no scripts/iframes) ==== */
@@ -67,10 +81,45 @@ const sanitizeHtml = (dirty: string) =>
     ADD_ATTR: ['rel'],
     FORBID_ATTR: ['onerror', 'onclick', 'style'],
     RETURN_TRUSTED_TYPE: false,
-  }).replaceAll('<a ', '<a rel="nofollow noopener" target="_blank" '); // enforce safe link attrs
+  }).replaceAll('<a ', '<a rel="nofollow noopener" target="_blank" ');
 
+/** ==== Page (Client) ==== */
 const CategoryPage: React.FC<Props> = ({ params }) => {
-  const { category: categorySlug } = use(params);
+  /** ==== Resolve params Promise into a usable slug ==== */
+  const [categorySlug, setCategorySlug] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    let mounted = true;
+    params
+      .then((val) => {
+        if (mounted) setCategorySlug(val?.category);
+      })
+      .catch(() => {
+        if (mounted) setCategorySlug(undefined);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [params]);
+
+  /** Early skeleton while slug resolves (prevents undefined access downstream) */
+  if (!categorySlug) {
+    return (
+      <div className="bg-white overflow-x-hidden" style={{ fontFamily: 'var(--font-poppins), Arial, sans-serif' }}>
+        <Head>
+          <title>Categories</title>
+          <meta name="description" content="Explore our product range." />
+        </Head>
+        <a
+          href="#main"
+          className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-white focus:text-black focus:px-3 focus:py-2 focus:rounded"
+        >
+          Skip to main content
+        </a>
+        <div aria-hidden className="w-full bg-gray-100 animate-pulse" style={{ height: 'clamp(300px, 35vw, 420px)' }} />
+      </div>
+    );
+  }
 
   /** ==== State ==== */
   const [categoryInfo, setCategoryInfo] = useState<Category | null>(null);
@@ -82,6 +131,10 @@ const CategoryPage: React.FC<Props> = ({ params }) => {
   const [desktopIndex, setDesktopIndex] = useState(0);
   const [mobileIndex, setMobileIndex] = useState(0);
 
+  /** Track current desktop hero for <link preload> */
+  const currentDesktopHero = desktopImages[desktopIndex];
+  const hasPrefetchedHeroRef = useRef(false);
+
   /** ==== Derived values ==== */
   const categoryText = useMemo(
     () =>
@@ -92,103 +145,91 @@ const CategoryPage: React.FC<Props> = ({ params }) => {
     [categorySlug]
   );
 
-  /** ==== Data fetching ==== */
+  /** ==== Data fetching (parallel + abort-safe) ==== */
   useEffect(() => {
     let canceled = false;
+    const ctrl = new AbortController();
 
     const fetchCategoryData = async () => {
       try {
-        // 1) Get nav items and locate the current category
-        const navRes = await fetchWithKey(`${API_BASE_URL}/api/show_nav_items/`);
-        if (!navRes.ok) throw new Error('Failed to fetch nav items');
-        const navData: Category[] = await navRes.json();
+        const navPromise = fetchWithKey(`${API_BASE_URL}/api/show_nav_items/`, { signal: ctrl.signal });
+        const heroPromise = fetchWithKey(`${API_BASE_URL}/api/hero-banner/`, { signal: ctrl.signal });
+        const catsPromise = fetchWithKey(`${API_BASE_URL}/api/show-categories/`, { signal: ctrl.signal });
 
-        const matchedCategory =
-          navData.find((cat) => cat.url?.toLowerCase() === categorySlug?.toLowerCase()) || null;
+        const [navRes, heroRes, catsRes] = await Promise.allSettled([navPromise, heroPromise, catsPromise]);
 
-        if (!matchedCategory) {
-          if (!canceled) setCategoryInfo(null);
-          return;
-        }
+        // --- Nav + category match ---
+        if (navRes.status === 'fulfilled' && navRes.value.ok) {
+          const navData: Category[] = await navRes.value.json();
+          const matchedCategory =
+            navData.find((cat) => cat.url?.toLowerCase() === categorySlug?.toLowerCase()) || null;
 
-        // 2) Enrich with /api/show-categories/
-        try {
-          const catRes = await fetchWithKey(`${API_BASE_URL}/api/show-categories/`);
-          if (catRes.ok) {
-            const catList: Array<{
-              id: string | number;
-              name: string;
-              description?: string;
-              caption?: string;
-              image?: string;
-              imageAlt?: string;
-            }> = await catRes.json();
+          // --- Enrich ---
+          if (matchedCategory) {
+            if (catsRes.status === 'fulfilled' && catsRes.value.ok) {
+              const catList: Array<{
+                id: string | number;
+                name: string;
+                description?: string;
+                caption?: string;
+              }> = await catsRes.value.json();
 
-            const enriched =
-              catList.find((c) => String(c.id) === String(matchedCategory.id)) ||
-              catList.find(
-                (c) => c.name?.toLowerCase() === matchedCategory.name?.toLowerCase()
-              );
+              const enriched =
+                catList.find((c) => String(c.id) === String(matchedCategory.id)) ||
+                catList.find((c) => c.name?.toLowerCase() === matchedCategory.name?.toLowerCase());
 
-            const finalCat: Category = {
-              ...matchedCategory,
-              description: enriched?.description ?? matchedCategory.description,
-              caption: enriched?.caption ?? matchedCategory.caption,
-            };
+              const finalCat: Category = {
+                ...matchedCategory,
+                description: enriched?.description ?? matchedCategory.description,
+                caption: enriched?.caption ?? matchedCategory.caption,
+              };
 
-            if (!canceled) setCategoryInfo(finalCat);
-          } else {
-            if (!canceled) setCategoryInfo(matchedCategory);
+              if (!canceled) setCategoryInfo(finalCat);
+            } else {
+              if (!canceled) setCategoryInfo(matchedCategory);
+            }
+          } else if (!canceled) {
+            setCategoryInfo(null);
           }
-        } catch {
-          if (!canceled) setCategoryInfo(matchedCategory);
+        } else if (!canceled) {
+          setCategoryInfo(null);
         }
-      } catch (error) {
-        console.error('❌ Category fetch error:', error);
+
+        // --- Hero images ---
+        if (heroRes.status === 'fulfilled' && heroRes.value.ok) {
+          const data = await heroRes.value.json();
+          const images: HeroImage[] = data?.images || [];
+          const desktop = images.filter((i) => i.device_type === 'desktop').map((i) => i.url);
+          const mobile = images.filter((i) => i.device_type === 'mobile').map((i) => i.url);
+
+          if (!canceled) {
+            if (desktop.length) setDesktopImages(desktop);
+            if (mobile.length) setMobileImages(mobile);
+            setHeroImages(images);
+          }
+        }
+      } catch {
         if (!canceled) setCategoryInfo(null);
       } finally {
         if (!canceled) setLoading(false);
       }
     };
 
-    const fetchHeroImages = async () => {
-      try {
-        const res = await fetchWithKey(`${API_BASE_URL}/api/hero-banner/`);
-        if (!res.ok) throw new Error('Failed to fetch hero images');
-        const data = await res.json();
-        const images: HeroImage[] = data?.images || [];
-
-        const desktop = images.filter((i) => i.device_type === 'desktop').map((i) => i.url);
-        const mobile = images.filter((i) => i.device_type === 'mobile').map((i) => i.url);
-
-        if (!canceled) {
-          if (desktop.length) setDesktopImages(desktop);
-          if (mobile.length) setMobileImages(mobile);
-          setHeroImages(images);
-        }
-      } catch (error) {
-        console.error('❌ Hero banner fetch error:', error);
-      }
-    };
-
     fetchCategoryData();
-    fetchHeroImages();
-
     return () => {
       canceled = true;
+      ctrl.abort();
     };
   }, [categorySlug]);
 
   /** ==== Motion-safe, memory-safe auto-advance for hero images ==== */
   useEffect(() => {
-    // Respect reduced motion to improve a11y & Lighthouse
     const prefersReducedMotion =
       typeof window !== 'undefined' &&
       window.matchMedia &&
       window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-    if (prefersReducedMotion) return;
-    if (heroImages.length < 2) return;
+    if (prefersReducedMotion || heroImages.length < 2) return;
 
     const interval = setInterval(() => {
       setDesktopIndex((prev) => (prev + 1) % Math.max(desktopImages.length, 1));
@@ -198,124 +239,106 @@ const CategoryPage: React.FC<Props> = ({ params }) => {
     return () => clearInterval(interval);
   }, [heroImages.length, desktopImages.length, mobileImages.length]);
 
-  /** ==== Client-side SEO: title, meta, JSON-LD (since this is a client file) ==== */
+  /** ==== Preload current desktop hero (helps LCP) ==== */
   useEffect(() => {
-    if (!categoryText) return;
-    const title = `${categoryText} · Categories`;
-    const description =
-      (categoryInfo?.caption || categoryInfo?.description || 'Explore our product range.')
-        .toString()
-        .replace(/<[^>]*>/g, '')
-        .slice(0, 160);
+    if (!currentDesktopHero || hasPrefetchedHeroRef.current) return;
+    const link = document.createElement('link');
+    link.rel = 'preload';
+    link.as = 'image';
+    link.href = currentDesktopHero;
+    document.head.appendChild(link);
+    hasPrefetchedHeroRef.current = true;
+    // keep link in head for session; don’t remove
+  }, [currentDesktopHero]);
 
-    // Title & meta description
-    document.title = title;
+  /** ==== SEO meta (Head, not DOM mutation) ==== */
+  const metaDescription =
+    (categoryInfo?.caption || categoryInfo?.description || 'Explore our product range.')
+      ?.toString()
+      .replace(/<[^>]*>/g, '')
+      .slice(0, 160) || 'Explore our product range.';
 
-    let metaDesc = document.querySelector('meta[name="description"]');
-    if (!metaDesc) {
-      metaDesc = document.createElement('meta');
-      metaDesc.setAttribute('name', 'description');
-      document.head.appendChild(metaDesc);
-    }
-    metaDesc.setAttribute('content', description);
+  const canonicalHref =
+    typeof window !== 'undefined' ? window.location.href.split('?')[0] : `/home/${categorySlug || ''}`;
 
-    // Canonical
-    const href = typeof window !== 'undefined' ? window.location.href.split('?')[0] : '';
-    let canonical = document.querySelector('link[rel="canonical"]') as HTMLLinkElement | null;
-    if (!canonical) {
-      canonical = document.createElement('link');
-      canonical.rel = 'canonical';
-      document.head.appendChild(canonical);
-    }
-    canonical.href = href;
+  const breadcrumbLd = {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      {
+        '@type': 'ListItem',
+        position: 1,
+        name: 'Home',
+        item: typeof window !== 'undefined' ? `${window.location.origin}/` : '/',
+      },
+      {
+        '@type': 'ListItem',
+        position: 2,
+        name: 'Categories',
+        item: typeof window !== 'undefined' ? `${window.location.origin}/home` : '/home',
+      },
+      {
+        '@type': 'ListItem',
+        position: 3,
+        name: categoryText || 'Category',
+        item:
+          typeof window !== 'undefined'
+            ? `${window.location.origin}/home/${categorySlug || ''}`
+            : `/home/${categorySlug || ''}`,
+      },
+    ],
+  };
 
-    // Breadcrumb JSON-LD
-    const scriptId = 'category-breadcrumb-jsonld';
-    let ld = document.getElementById(scriptId) as HTMLScriptElement | null;
-    const breadcrumb = {
-      '@context': 'https://schema.org',
-      '@type': 'BreadcrumbList',
-      itemListElement: [
-        {
-          '@type': 'ListItem',
-          position: 1,
-          name: 'Home',
-          item: typeof window !== 'undefined' ? `${window.location.origin}/` : '/',
-        },
-        {
-          '@type': 'ListItem',
-          position: 2,
-          name: 'Categories',
-          item: typeof window !== 'undefined' ? `${window.location.origin}/home` : '/home',
-        },
-        {
-          '@type': 'ListItem',
-          position: 3,
-          name: categoryText,
-          item:
-            typeof window !== 'undefined'
-              ? `${window.location.origin}/home/${categorySlug}`
-              : `/home/${categorySlug}`,
-        },
-      ],
-    };
-
-    if (!ld) {
-      ld = document.createElement('script');
-      ld.type = 'application/ld+json';
-      ld.id = scriptId;
-      document.head.appendChild(ld);
-    }
-    ld.text = JSON.stringify(breadcrumb);
-  }, [categoryText, categorySlug, categoryInfo?.caption, categoryInfo?.description]);
-
-  /** ==== Loading state (kept minimal; avoids big CLS) ==== */
+  /** ==== Loading state (minimal CLS) ==== */
   if (loading) {
     return (
-      <div
-        className="bg-white overflow-x-hidden"
-        style={{ fontFamily: 'var(--font-poppins), Arial, sans-serif' }}
-      >
+      <div className="bg-white overflow-x-hidden" style={{ fontFamily: 'var(--font-poppins), Arial, sans-serif' }}>
+        <Head>
+          <title>{categoryText ? `${categoryText} · Categories` : 'Categories'}</title>
+          <meta name="description" content={metaDescription} />
+          <link rel="canonical" href={canonicalHref} />
+        </Head>
+
         <a
           href="#main"
           className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-white focus:text-black focus:px-3 focus:py-2 focus:rounded"
         >
           Skip to main content
         </a>
-        <Header />
-        <LogoSection />
-        <HomePageTop />
-        <Navbar />
-        {/* Lightweight skeleton for hero to cut layout shift */}
-        <div aria-hidden className="w-full h-[300px] sm:h-[400px] bg-gray-100 animate-pulse" />
+
+        {/* Reserve hero space to prevent CLS */}
+        <div aria-hidden className="w-full bg-gray-100 animate-pulse" style={{ height: 'clamp(300px, 35vw, 420px)' }} />
       </div>
     );
   }
 
   /** ==== 404 (no category) ==== */
   if (!categoryInfo) {
-    // Add a noindex meta for this state to avoid SEO noise
-    if (typeof document !== 'undefined') {
-      let robots = document.querySelector('meta[name="robots"]');
-      if (!robots) {
-        robots = document.createElement('meta');
-        robots.setAttribute('name', 'robots');
-        document.head.appendChild(robots);
-      }
-      robots.setAttribute('content', 'noindex, follow');
-    }
-
     return (
       <div
         className="bg-white overflow-x-hidden lg:overflow-y-hidden"
         style={{ fontFamily: 'var(--font-poppins), Arial, sans-serif' }}
       >
+        <Head>
+          <meta name="robots" content="noindex, follow" />
+          <title>Page not found · Categories</title>
+          <meta name="description" content="Requested page was not found." />
+          <link rel="canonical" href={canonicalHref} />
+          <script
+            type="application/ld+json"
+            // eslint-disable-next-line react/no-danger
+            dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd) }}
+          />
+        </Head>
+
         <a
           href="#main"
           className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-white focus:text-black focus:px-3 focus:py-2 focus:rounded"
         >
           Skip to main content
         </a>
+
+        {/* Keep header/nav lightweight while still visible after lazy loads */}
         <Header />
         <LogoSection />
         <HomePageTop />
@@ -381,10 +404,19 @@ const CategoryPage: React.FC<Props> = ({ params }) => {
   const categoryImage = categoryInfo.images?.[0]?.url || '/images/img1.jpg';
 
   return (
-    <div
-      className="flex flex-col bg-white"
-      style={{ fontFamily: 'var(--font-poppins), Arial, Helvetica, sans-serif' }}
-    >
+    <div className="flex flex-col bg-white" style={{ fontFamily: 'var(--font-poppins), Arial, Helvetica, sans-serif' }}>
+      <Head>
+        <title>{categoryText ? `${categoryText} · Categories` : 'Categories'}</title>
+        <meta name="description" content={metaDescription} />
+        <link rel="canonical" href={canonicalHref} />
+        {/* Breadcrumb JSON-LD */}
+        <script
+          type="application/ld+json"
+          // eslint-disable-next-line react/no-danger
+          dangerouslySetInnerHTML={{ __html: JSON.stringify(breadcrumbLd) }}
+        />
+      </Head>
+
       {/* Skip link for keyboard users */}
       <a
         href="#main"
@@ -393,79 +425,83 @@ const CategoryPage: React.FC<Props> = ({ params }) => {
         Skip to main content
       </a>
 
+      {/* Keep chrome components, but they’re lazy-loaded to shrink TBT without jarring CLS */}
       <Header />
       <LogoSection />
       <Navbar />
       <HomePageTop />
 
-      {/* Hero Banner (desktop first, priority to reduce LCP) */}
-      <SafeImg
-        loading="eager"
-        width="1440"
-        height="400"
-        src={desktopImages[desktopIndex]}
-        alt="Promotional hero banner for desktop"
-        className="hidden sm:block w-full h-auto mx-auto"
-        // @ts-expect-error: pass-through to <img> if SafeImg forwards props
-        fetchpriority="high"
-        decoding="async"
-      />
-      <SafeImg
-        loading="lazy"
-        width="768"
-        height="300"
-        src={mobileImages[mobileIndex]}
-        alt="Promotional hero banner for mobile"
-        className="block sm:hidden w-full h-auto object-cover mx-auto"
-        decoding="async"
-      />
+      {/* Hero wrapper reserves height to eliminate CLS; desktop first for LCP */}
+      <section aria-label="Hero banner" className="w-full">
+        <div className="hidden sm:block w-full mx-auto overflow-hidden" style={{ height: 'clamp(320px, 36vw, 440px)' }}>
+          <SafeImg
+            loading="eager"
+            width="1440"
+            height="440"
+            src={currentDesktopHero}
+            alt="Promotional hero banner for desktop"
+            className="w-full h-full object-cover"
+            // @ts-expect-error pass-through to <img> if SafeImg forwards props
+            fetchpriority="high"
+            decoding="async"
+          />
+        </div>
+
+        <div className="block sm:hidden w-full mx-auto overflow-hidden" style={{ height: 'clamp(220px, 42vw, 320px)' }}>
+          <SafeImg
+            loading="lazy"
+            width="768"
+            height="320"
+            src={mobileImages[mobileIndex]}
+            alt="Promotional hero banner for mobile"
+            className="w-full h-full object-cover"
+            decoding="async"
+          />
+        </div>
+      </section>
 
       {/* Main content */}
       <main id="main">
-        {/* Subcategories */}
+        {/* Subcategories: use real list semantics for a11y */}
         <section className="px-4 sm:px-6 lg:px-24 py-10 bg-white" aria-labelledby="subcategory-title">
-          <h2
-            id="subcategory-title"
-            className="text-[#891F1A] text-2xl sm:text-3xl font-semibold text-center mb-6"
-          >
+          <h2 id="subcategory-title" className="text-[#891F1A] text-2xl sm:text-3xl font-semibold text-center mb-6">
             {categoryText}
           </h2>
 
-          <div
+          <ul
             className="
               grid gap-2
               grid-cols-3
               sm:grid-cols-4
               md:grid-cols-5
             "
-            role="list"
           >
             {categoryInfo.subcategories.map((subcat) => {
               const subcatImage = subcat.images?.[0]?.url || '/images/default.jpg';
               const subcatSlug = subcat.url;
 
               return (
-                <Link
-                  href={`/home/${categorySlug}/${subcatSlug}`}
-                  key={String(subcat.id) || `${subcatSlug}-${subcat.name}`}
-                  className="block group"
-                  role="listitem"
-                  aria-label={`View ${subcat.name}`}
-                >
-                  <SafeImg
-                    src={subcatImage}
-                    alt={subcat.images?.[0]?.alt_text || subcat.name}
-                    loading="lazy"
-                    className="w-full h-full object-cover rounded-lg transition-transform group-hover:scale-105"
-                    decoding="async"
-                  />
-                  <div className="mt-2">
-                    <p className="text-gray-800 font-medium text-center">{subcat.name}</p>
-                  </div>
-                </Link>
+                <li key={String(subcat.id) || `${subcatSlug}-${subcat.name}`} className="block">
+                  <Link
+                    href={`/home/${categorySlug}/${subcatSlug}`}
+                    aria-label={`View ${subcat.name}`}
+                    className="group block focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 rounded-lg"
+                  >
+                    <SafeImg
+                      src={subcatImage}
+                      alt={subcat.images?.[0]?.alt_text || subcat.name}
+                      loading="lazy"
+                      className="w-full h-full object-cover rounded-lg transition-transform group-hover:scale-105"
+                      decoding="async"
+                    />
+                    <div className="mt-2">
+                      <p className="text-gray-800 font-medium text-center">{subcat.name}</p>
+                    </div>
+                  </Link>
+                </li>
               );
             })}
-          </div>
+          </ul>
         </section>
 
         {/* Category Info */}
@@ -495,6 +531,7 @@ const CategoryPage: React.FC<Props> = ({ params }) => {
               {/* Description (sanitized HTML) */}
               <div
                 className="leading-relaxed mt-3 text-gray-700 font-normal text-[15px] [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-6 [&_a]:underline"
+                // eslint-disable-next-line react/no-danger
                 dangerouslySetInnerHTML={{ __html: descriptionHtml }}
                 aria-label={`${categoryText} description`}
               />

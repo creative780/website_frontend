@@ -6,8 +6,8 @@ import React, {
   useEffect,
   useRef,
   useLayoutEffect,
-  useMemo,
   useCallback,
+  useId,
 } from "react";
 import { API_BASE_URL } from "../utils/api";
 import { SafeImg } from "./SafeImage";
@@ -55,7 +55,7 @@ const getDropdownItemColorClass = (color: string) => {
 };
 
 /* ──────────────────────────────────────────────────────────
-   Fetch helper (single harmless custom header)
+   Fetch helper (single harmless custom header) + session cache
    ────────────────────────────────────────────────────────── */
 const FRONTEND_KEY = (process.env.NEXT_PUBLIC_FRONTEND_KEY || "").trim();
 const fetchWithKey = (url: string, init: RequestInit = {}) => {
@@ -64,14 +64,53 @@ const fetchWithKey = (url: string, init: RequestInit = {}) => {
   return fetch(url, {
     ...init,
     headers,
-    cache: "no-store",
     credentials: "omit",
     mode: "cors",
   });
 };
 
+// simple in-memory + sessionStorage cache to avoid re-fetch on client navigations
+let NAV_MEMO: Category[] | null = null;
+const NAV_SKEY = "cc_nav_cache_v1";
+
+const readNavCache = (): Category[] | null => {
+  if (NAV_MEMO) return NAV_MEMO;
+  try {
+    const raw = sessionStorage.getItem(NAV_SKEY);
+    if (!raw) return null;
+    NAV_MEMO = JSON.parse(raw) as Category[];
+    return NAV_MEMO;
+  } catch {
+    return null;
+  }
+};
+
+const writeNavCache = (data: Category[]) => {
+  NAV_MEMO = data;
+  try {
+    sessionStorage.setItem(NAV_SKEY, JSON.stringify(data));
+  } catch {
+    /* ignore quota */
+  }
+};
+
 /* Fallback image (local/public) */
 const NOT_FOUND_IMG = "/images/img1.jpg";
+
+/* ──────────────────────────────────────────────────────────
+   RAF throttle helper
+   ────────────────────────────────────────────────────────── */
+const useRafThrottle = (fn: () => void) => {
+  const ticking = useRef(false);
+  return useCallback(() => {
+    if (ticking.current) return;
+    ticking.current = true;
+    requestAnimationFrame(() => {
+      fn();
+      ticking.current = false;
+    });
+  }, [fn]);
+};
 
 /* ──────────────────────────────────────────────────────────
    Component
@@ -101,19 +140,16 @@ export default function Navbar() {
     const rect = el.getBoundingClientRect();
     setDropdownTop(Math.max(8, Math.round(rect.bottom + 8)));
   }, []);
+  const rafRecomputeDropdownTop = useRafThrottle(recomputeDropdownTop);
 
   useEffect(() => {
-    // guard for SSR
     if (typeof window === "undefined") return;
-    recomputeDropdownTop();
-    const ro = new ResizeObserver(() => {
-      // batch via rAF
-      requestAnimationFrame(recomputeDropdownTop);
-    });
+    rafRecomputeDropdownTop();
+    const ro = new ResizeObserver(rafRecomputeDropdownTop);
     if (navRef.current) ro.observe(navRef.current);
 
-    const onScroll = () => requestAnimationFrame(recomputeDropdownTop);
-    const onResize = () => requestAnimationFrame(recomputeDropdownTop);
+    const onScroll = rafRecomputeDropdownTop;
+    const onResize = rafRecomputeDropdownTop;
 
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", onResize);
@@ -123,7 +159,7 @@ export default function Navbar() {
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("resize", onResize);
     };
-  }, [recomputeDropdownTop]);
+  }, [rafRecomputeDropdownTop]);
 
   // ===== Category bar sizing (single row; centered on lg+) =====
   const barContainerRef = useRef<HTMLDivElement>(null);
@@ -180,37 +216,60 @@ export default function Navbar() {
     requestAnimationFrame(() => {
       const W2 = barContainerRef.current?.clientWidth || 0;
       const content2 = barInnerRef.current?.scrollWidth || 0;
-      const finalScale = content2 > 0 ? Math.max(0.75, Math.min(1, W2 / content2)) : 1;
+      const finalScale = content2 > 0 ? Math.max(0.85, Math.min(1, W2 / content2)) : 1;
       setScale(finalScale);
     });
   }, [isLg]);
+  const rafFitBar = useRafThrottle(fitBar);
 
   useLayoutEffect(() => {
-    fitBar();
-  }, [fitBar, navItemsData.length, isLg]);
+    rafFitBar();
+  }, [rafFitBar, navItemsData.length, isLg]);
 
   useEffect(() => {
     if (!barContainerRef.current) return;
-    const r = new ResizeObserver(() => requestAnimationFrame(fitBar));
+    const r = new ResizeObserver(rafFitBar);
     r.observe(barContainerRef.current);
     return () => r.disconnect();
-  }, [fitBar]);
+  }, [rafFitBar]);
 
-  // ===== Data fetch =====
+  // ===== Data fetch with session cache =====
   useEffect(() => {
+    const cached = readNavCache();
+    if (cached && cached.length) {
+      setProductData(cached);
+      const formatted: NavItem[] = cached.map((cat) => ({
+        id: cat.id,
+        label: cat.name,
+        url: `/home/${cat.url}`,
+        dropdownContent: {
+          title: cat.name,
+          columns:
+            (cat.subcategories || []).map((sub) => ({
+              label: sub.name,
+              url: `/home/${cat.url}/${sub.url}`,
+              color: "red",
+            })) || [],
+        },
+      }));
+      setNavItemsData(formatted);
+      setLoading(false);
+      return;
+    }
+
     const controller = new AbortController();
     (async () => {
       try {
         setFetchError(null);
-        const res = await fetchWithKey(
-          `${API_BASE_URL}/api/show_nav_items/?_=${Date.now()}`,
-          { signal: controller.signal }
-        );
+        const res = await fetchWithKey(`${API_BASE_URL}/api/show_nav_items/`, {
+          signal: controller.signal,
+        });
         if (!res.ok) {
           const text = await res.text().catch(() => "");
           throw new Error(`HTTP ${res.status}${text ? ` - ${text}` : ""}`);
         }
         const nav: Category[] = await res.json();
+        writeNavCache(nav);
         setProductData(nav);
 
         const formatted: NavItem[] = (nav || []).map((cat) => ({
@@ -230,7 +289,6 @@ export default function Navbar() {
         setNavItemsData(formatted);
       } catch (err: any) {
         if (err?.name === "AbortError") return;
-        // eslint-disable-next-line no-console
         console.error("❌ Failed to fetch nav items:", err);
         setFetchError(err?.message || "Failed to load navigation");
       } finally {
@@ -240,15 +298,23 @@ export default function Navbar() {
     return () => controller.abort();
   }, []);
 
-  // lock body scroll when dropdown open (only on desktop)
+  // ===== Unified scroll lock with STABLE dependency length =====
+  const lockScroll = mobileOpen || (dropdownVisible && openIndex !== null);
+
   useEffect(() => {
     if (typeof document === "undefined") return;
-    if (dropdownVisible) document.body.style.overflow = "hidden";
-    else document.body.style.overflow = "";
+    if (lockScroll) {
+      document.body.style.overflow = "hidden";
+      (document.body.style as any).overscrollBehavior = "none";
+    } else {
+      document.body.style.overflow = "";
+      (document.body.style as any).overscrollBehavior = "";
+    }
     return () => {
       document.body.style.overflow = "";
+      (document.body.style as any).overscrollBehavior = "";
     };
-  }, [dropdownVisible]);
+  }, [lockScroll]); // <— single, stable dependency
 
   // reset right pane when switching category
   useEffect(() => {
@@ -259,28 +325,31 @@ export default function Navbar() {
   }, [openIndex, recomputeDropdownTop]);
 
   /* ─────────────── Interaction (hover + keyboard) ─────────────── */
-  const handleNavEnter = useCallback((idx: number) => {
-    if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
-    recomputeDropdownTop();
-    setOpenIndex(idx);
-    setDropdownVisible(true);
-    requestAnimationFrame(recomputeDropdownTop);
-  }, [recomputeDropdownTop]);
+  const handleNavEnter = useCallback(
+    (idx: number) => {
+      if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
+      rafRecomputeDropdownTop();
+      setOpenIndex(idx);
+      setDropdownVisible(true);
+      requestAnimationFrame(rafRecomputeDropdownTop);
+    },
+    [rafRecomputeDropdownTop]
+  );
 
   const delayedClose = useCallback(() => {
     if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
     closeTimeoutRef.current = setTimeout(() => {
       setDropdownVisible(false);
       setHoveredSubForProducts(null);
-      setTimeout(() => setOpenIndex(null), 200);
-    }, 200);
+      setTimeout(() => setOpenIndex(null), 160);
+    }, 160);
   }, []);
 
   const handleNavLeave = useCallback(() => {
     if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
     closeTimeoutRef.current = setTimeout(() => {
       if (!isDropdownHovered) delayedClose();
-    }, 200);
+    }, 160);
   }, [delayedClose, isDropdownHovered]);
 
   const handleDropdownEnter = useCallback(() => {
@@ -330,23 +399,36 @@ export default function Navbar() {
     [productData]
   );
 
-  // Force ID-based detail link if possible
   const buildProductHref = useCallback((category: any, sub: any, product: any) => {
-    const catId = category?.id ?? category?.category_id ?? category?.ID;
-    const subId = sub?.id ?? sub?.subcategory_id ?? sub?.ID;
+    const catId = category?.id ?? category?.category_id ?? category?.ID ?? category?.url;
+    const subId = sub?.id ?? sub?.subcategory_id ?? sub?.ID ?? sub?.url;
     const prodId = product?.id ?? product?.product_id ?? product?.ID;
-    return `/home/${catId}/${subId}/products/${prodId}`;
+    if (catId && subId && prodId) return `/home/${catId}/${subId}/products/${prodId}`;
+    return `/home/${category?.url}/${sub?.url}/products/${prodId ?? ""}`;
   }, []);
 
+  const dropdownId = useId();
+
   /* ─────────────── Render guards ─────────────── */
-  if (loading) return null;
+  if (loading) {
+    return (
+      <div className="hidden md:block" ref={navRef}>
+        <nav
+          className="w-full bg-white border-b border-gray-200 m-0 min-h-[80px] flex items-center"
+          aria-label="Primary"
+        >
+          <div className="w-full px-2 mx-auto text-center text-sm text-gray-500"> </div>
+        </nav>
+      </div>
+    );
+  }
 
   if (!navItemsData.length) {
     return (
       <div className="hidden md:block" ref={navRef}>
-        <nav className="w-full bg-white border-b border-gray-200 m-0 min-h-[68px] md:min-h-[80px] flex items-center font-medium">
-          <div className="w-full px-[5px] mx-auto text-center text-sm text-red-600">
-            {fetchError ? `Navigation failed to load: ${fetchError}` : "No categories available."}
+        <nav className="w-full bg-white border-b border-gray-200 m-0 min-h-[80px] flex items-center font-medium" aria-label="Primary">
+          <div className="w-full px-2 mx-auto text-center text-sm text-red-600">
+            {fetchError ? `Navigation failed to load: ${fetchError}` : " "}
           </div>
         </nav>
       </div>
@@ -361,11 +443,10 @@ export default function Navbar() {
       ref={navRef}
     >
       <nav
-        className="w-full bg-white border-b border-gray-200 m-0 min-h-[68px] md:min-h-[80px] flex items-center font-medium"
+        className="w-full bg-white border-b border-gray-200 m-0 min-h-[80px] flex items-center font-medium"
         aria-label="Primary"
-        role="navigation"
       >
-        <div className="w-full px-[5px] mx-auto">
+        <div className="w-full px-2 mx-auto">
           <div className="relative">
             {/* Single row links; centered on lg+, scrollable below lg */}
             <div className={`${mobileOpen ? "flex flex-col py-2 space-y-1" : "hidden"} md:flex w-full`}>
@@ -373,11 +454,12 @@ export default function Navbar() {
                 ref={barContainerRef}
                 className="w-full overflow-x-auto lg:overflow-visible overscroll-x-contain snap-x snap-mandatory
                            [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                aria-label="Product categories"
               >
                 <div className="flex lg:justify-center w-full">
                   <div
                     ref={barInnerRef}
-                    className="flex flex-nowrap w-max select-none whitespace-nowrap origin-center transition-transform lg:w-fit"
+                    className="flex flex-nowrap w-max select-none whitespace-nowrap origin-center motion-safe:transition-transform lg:w-fit"
                     style={{
                       gap,
                       fontSize: `${fs}px`,
@@ -387,26 +469,50 @@ export default function Navbar() {
                       letterSpacing: "0.2px",
                     }}
                     role="menubar"
-                    aria-label="Product categories"
                   >
                     {navItemsData.map((item, idx) => (
                       <div
                         key={item.id ?? `${item.label}-${idx}`}
                         className="relative snap-start shrink-0"
-                        onMouseEnter={() => handleNavEnter(idx)}
+                        onMouseEnter={() => setTimeout(() => handleNavEnter(idx), 0)}
                         onMouseLeave={handleNavLeave}
                       >
                         <Link
                           href={item.url || "#"}
-                          prefetch
-                          className={`block text-center whitespace-nowrap overflow-ellipsis transition-colors ${
+                          className={`block text-center whitespace-nowrap overflow-ellipsis motion-safe:transition-colors ${
                             openIndex === idx ? "text-red-600" : "text-gray-800 hover:text-red-600"
-                          } font-medium px-2 py-1.5 lg:px-2.5 lg:py-2`}
+                          } font-medium px-2 py-2 lg:px-3`}
                           style={{ fontSize: "inherit" }}
-                          aria-haspopup="true"
-                          aria-expanded={openIndex === idx && dropdownVisible}
+                          aria-haspopup="menu"
+                          aria-expanded={openIndex === idx && dropdownVisible ? true : false}
+                          aria-controls={dropdownId}
                           role="menuitem"
-                          onKeyDown={(e) => onTopItemKeyDown(e, idx)}
+                          onKeyDown={(e) => {
+                            const total = navItemsData.length;
+                            if (!total) return;
+                            switch (e.key) {
+                              case "Enter":
+                              case " ":
+                              case "ArrowDown":
+                                e.preventDefault();
+                                handleNavEnter(idx);
+                                break;
+                              case "Escape":
+                                e.preventDefault();
+                                delayedClose();
+                                break;
+                              case "ArrowRight":
+                                e.preventDefault();
+                                handleNavEnter((idx + 1) % total);
+                                break;
+                              case "ArrowLeft":
+                                e.preventDefault();
+                                handleNavEnter((idx - 1 + total) % total);
+                                break;
+                              default:
+                                break;
+                            }
+                          }}
                           onFocus={() => handleNavEnter(idx)}
                           onClick={() => setMobileOpen(false)}
                         >
@@ -427,9 +533,16 @@ export default function Navbar() {
           {/* Dropdown (desktop) */}
           {openIndex !== null && navItemsData[openIndex]?.dropdownContent && (
             <section
-              onMouseEnter={handleDropdownEnter}
-              onMouseLeave={handleDropdownLeave}
-              className={`hidden md:block fixed z-50 mx-auto px-2 transition-all duration-200 ease-out ${
+              id={dropdownId}
+              onMouseEnter={() => {
+                setIsDropdownHovered(true);
+                if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
+              }}
+              onMouseLeave={() => {
+                setIsDropdownHovered(false);
+                delayedClose();
+              }}
+              className={`hidden md:block fixed z-50 mx-auto px-2 motion-safe:transition-all duration-150 ease-out ${
                 dropdownVisible ? "opacity-100 scale-100" : "opacity-0 scale-95 pointer-events-none"
               }`}
               style={{ top: `${dropdownTop}px`, left: "20px", right: "20px" }}
@@ -451,7 +564,7 @@ export default function Navbar() {
                           href={col.url || "#"}
                           className={`${getDropdownItemColorClass(
                             col.color || "black"
-                          )} text-sm py-1 hover:underline font-medium whitespace-nowrap`}
+                          )} text-sm py-1 hover:underline font-weight-500 whitespace-nowrap`}
                           onMouseEnter={() => setHoveredSubForProducts(col.label)}
                           onFocus={() => setHoveredSubForProducts(col.label)}
                           onClick={() => setMobileOpen(false)}
@@ -491,17 +604,21 @@ export default function Navbar() {
                                 href={href}
                                 className="w-[120px] mx-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 rounded-md"
                                 onClick={() => setMobileOpen(false)}
-                                prefetch
                               >
-                                <figure className="w-[120px] h-[120px] rounded-md overflow-hidden flex items-center justify-center">
+                                <figure
+                                  className="rounded-md overflow-hidden flex items-center justify-center bg-gray-50"
+                                  style={{ width: 120, height: 120 }}
+                                >
                                   <SafeImg
                                     src={imgUrl}
                                     alt={imgAlt}
                                     loading="lazy"
+                                    width={120}
+                                    height={120}
                                     className="object-cover w-full h-full rounded-md"
                                     onError={(e) => {
                                       const target = e.currentTarget as HTMLImageElement;
-                                      target.onerror = null;
+                                      (target as any).onerror = null;
                                       target.src = NOT_FOUND_IMG;
                                     }}
                                   />
@@ -536,17 +653,21 @@ export default function Navbar() {
                               href={subHref || "#"}
                               className="w-[120px] mx-auto focus:outline-none focus-visible:ring-2 focus-visible:ring-red-400 rounded-md"
                               onClick={() => setMobileOpen(false)}
-                              prefetch
                             >
-                              <figure className="w-[120px] h-[120px] rounded-md overflow-hidden flex items-center justify-center">
+                              <figure
+                                className="rounded-md overflow-hidden flex items-center justify-center bg-gray-50"
+                                style={{ width: 120, height: 120 }}
+                              >
                                 <SafeImg
                                   src={imgUrl}
                                   alt={imgAlt}
                                   loading="lazy"
+                                  width={120}
+                                  height={120}
                                   className="object-cover w-full h-full rounded-md"
                                   onError={(e) => {
                                     const target = e.currentTarget as HTMLImageElement;
-                                    target.onerror = null;
+                                    (target as any).onerror = null;
                                     target.src = NOT_FOUND_IMG;
                                   }}
                                 />

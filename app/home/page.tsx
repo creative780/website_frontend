@@ -25,7 +25,8 @@ import {
 import Toastify from "toastify-js";
 import { API_BASE_URL } from "../utils/api";
 import { ChatBot } from "../components/ChatBot";
-import { SafeImg } from "../components/SafeImage";
+// USE SafeImage (next/image wrapper) for the hero so Next generates srcset automatically
+import SafeImage, { SafeImg } from "../components/SafeImage";
 import dynamic from "next/dynamic";
 
 // ───────────────────────────────────────────────────────────────────────────────
@@ -67,6 +68,9 @@ type Category = {
 };
 
 export default function PrintingServicePage() {
+  const FALLBACK_HERO_DESKTOP = "/images/Banner3.jpg";
+  const FALLBACK_HERO_MOBILE = "/images/Banner3.jpg";
+
   const fallbackImage =
     "https://storage.googleapis.com/tagjs-prod.appspot.com/v1/ZfQW3qI2ok/ymeg8jht_expires_30_days.png";
 
@@ -101,7 +105,7 @@ export default function PrintingServicePage() {
     fetch(`${API_BASE_URL}/api/hero-banner/`, {
       ...withFrontendKey(),
       signal: ctrl.signal,
-      cache: "no-store", // keep behavior
+      cache: "no-store",
     })
       .then((res) =>
         res.ok ? res.json() : Promise.reject(new Error(String(res.status)))
@@ -130,7 +134,6 @@ export default function PrintingServicePage() {
         setMobileIndex(0);
       })
       .catch(() => {
-        // Silent fallback
         setDesktopImages([fallbackImage]);
         setMobileImages([fallbackImage]);
         setDesktopIndex(0);
@@ -159,30 +162,63 @@ export default function PrintingServicePage() {
           (data || []).filter((c) => (c.status ?? "visible") === "visible")
         );
       })
-      .catch(() => {
-        // no-op; empty grid is fine
-      });
-
+      .catch(() => {});
     return () => ctrl.abort();
   }, []);
 
-  // rotate banners unless user prefers reduced motion
+  // rotate banners unless user prefers reduced motion; pause when tab hidden
   useEffect(() => {
     if (prefersReducedMotion) return;
     if (!desktopImages.length) return;
-    const id = setInterval(() => {
-      setDesktopIndex((prev) => (prev + 1) % desktopImages.length);
-    }, 4000);
-    return () => clearInterval(id);
+
+    let id: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      if (id) return;
+      id = setInterval(() => {
+        setDesktopIndex((prev) => (prev + 1) % desktopImages.length);
+      }, 4000);
+    };
+    const stop = () => {
+      if (!id) return;
+      clearInterval(id);
+      id = null;
+    };
+    const onVis = () =>
+      document.visibilityState === "visible" ? start() : stop();
+
+    start();
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, [desktopImages.length, prefersReducedMotion]);
 
   useEffect(() => {
     if (prefersReducedMotion) return;
     if (!mobileImages.length) return;
-    const id = setInterval(() => {
-      setMobileIndex((prev) => (prev + 1) % mobileImages.length);
-    }, 4000);
-    return () => clearInterval(id);
+
+    let id: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      if (id) return;
+      id = setInterval(() => {
+        setMobileIndex((prev) => (prev + 1) % mobileImages.length);
+      }, 4000);
+    };
+    const stop = () => {
+      if (!id) return;
+      clearInterval(id);
+      id = null;
+    };
+    const onVis = () =>
+      document.visibilityState === "visible" ? start() : stop();
+
+    start();
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVis);
+    };
   }, [mobileImages.length, prefersReducedMotion]);
 
   // Contact items memoized to avoid churn
@@ -275,6 +311,10 @@ export default function PrintingServicePage() {
   const getAt = (arr: string[], idx: number, fallback: string) =>
     arr.length ? arr[Math.max(0, Math.min(idx, arr.length - 1))] : fallback;
 
+  // Compute first-load hero candidates
+  const desktopHeroSrc = getAt(desktopImages, desktopIndex, FALLBACK_HERO_DESKTOP);
+  const mobileHeroSrc = getAt(mobileImages, mobileIndex, FALLBACK_HERO_MOBILE);
+
   return (
     <>
       {/* SEO + Social + Discoverability */}
@@ -305,60 +345,10 @@ export default function PrintingServicePage() {
           content="Premium printing and design services in Dubai with fast turnaround."
         />
         <meta name="twitter:image" content="/images/Banner3.jpg" />
-        {/* Preconnects (minor perf wins) */}
+        {/* Preconnects */}
         <link rel="preconnect" href={API_BASE_URL} />
         <link rel="dns-prefetch" href={API_BASE_URL} />
-        {/* JSON-LD: Organization + Website */}
-        <script
-          type="application/ld+json"
-          // eslint-disable-next-line react/no-danger
-          dangerouslySetInnerHTML={{
-            __html: JSON.stringify({
-              "@context": "https://schema.org",
-              "@type": "Organization",
-              name: "Creative Connect",
-              url: "https://www.creativeconnect.ae/",
-              logo: "https://www.creativeconnect.ae/images/logo.png",
-              sameAs: [
-                "https://www.facebook.com/",
-                "https://www.instagram.com/",
-                "https://www.linkedin.com/",
-              ],
-              address: {
-                "@type": "PostalAddress",
-                addressLocality: "Dubai",
-                streetAddress: "Naif – Deira",
-                addressCountry: "AE",
-              },
-              contactPoint: [
-                {
-                  "@type": "ContactPoint",
-                  telephone: "+971502793948",
-                  contactType: "customer service",
-                  areaServed: "AE",
-                  availableLanguage: ["English", "Arabic"],
-                },
-              ],
-            }),
-          }}
-        />
-        <script
-          type="application/ld+json"
-          // eslint-disable-next-line react/no-danger
-          dangerouslySetInnerHTML={{
-            __html: JSON.stringify({
-              "@context": "https://schema.org",
-              "@type": "WebSite",
-              url: "https://www.creativeconnect.ae/",
-              potentialAction: {
-                "@type": "SearchAction",
-                target:
-                  "https://www.creativeconnect.ae/search?q={search_term_string}",
-                "query-input": "required name=search_term_string",
-              },
-            }),
-          }}
-        />
+        {/* No imagesrcset here. Next/Image with priority will emit proper preloads. */}
       </Head>
 
       <main
@@ -380,25 +370,36 @@ export default function PrintingServicePage() {
           Creative Connect — Printing &amp; Design Services in Dubai
         </h1>
 
-        {/* HERO */}
+        {/* HERO — use SafeImage (next/image) so Next generates srcset; give sizes for correct pick */}
         <section aria-label="Hero banners">
-          <SafeImg
-            loading="eager"
-            fetchPriority="high"
-            width="1440"
-            height="400"
-            src={getAt(desktopImages, desktopIndex, fallbackImage)}
-            alt="Featured promotions and services for desktop visitors"
-            className="hidden sm:block w-full h-auto mx-auto"
-          />
-          <SafeImg
-            loading="lazy"
-            width="768"
-            height="300"
-            src={getAt(mobileImages, mobileIndex, fallbackImage)}
-            alt="Featured promotions and services for mobile visitors"
-            className="block sm:hidden w-full h-auto object-cover mx-auto"
-          />
+          {/* Desktop */}
+          <div className="hidden sm:block">
+            <SafeImage
+              alt="Featured promotions and services for desktop visitors"
+              src={desktopHeroSrc}
+              width={1440}
+              height={400}
+              priority
+              fetchPriority="high"
+              sizes="(max-width: 1024px) 100vw, 1440px"
+              className="w-full h-auto mx-auto"
+              // optional: quality={80}
+            />
+          </div>
+
+          {/* Mobile */}
+          <div className="block sm:hidden">
+            <SafeImage
+              alt="Featured promotions and services for mobile visitors"
+              src={mobileHeroSrc}
+              width={768}
+              height={300}
+              priority
+              fetchPriority="high"
+              sizes="100vw"
+              className="w-full h-auto object-cover mx-auto"
+            />
+          </div>
         </section>
 
         {/* CAROUSELS */}
@@ -406,12 +407,15 @@ export default function PrintingServicePage() {
           <Carousel />
         </section>
 
+        {/* The rest can stay SafeImg if you want, but AVIF/WebP would cut bytes a lot */}
         <SafeImg
           height="250"
+          sizes="100vw"
           src="/images/Banner3.jpg"
           alt="Seasonal offer banner"
           className="block bg-[#D9D9D9] w-full h-auto mx-auto"
           decoding="async"
+          loading="lazy"
         />
 
         {/* CATEGORIES */}
@@ -445,13 +449,15 @@ export default function PrintingServicePage() {
                       className="flex flex-col items-center hover:scale-105 transition-transform duration-300"
                       aria-label={`Open category: ${category.name}`}
                     >
-                      {/* 4:3 ratio container via wrapperClassName */}
+                      {/* 4:3 ratio container via wrapperClassName (prevents CLS) */}
                       <SafeImg
                         src={`${API_BASE_URL}${category.image}`}
                         alt={category.name}
                         className="absolute inset-0 w-full h-full object-contain"
                         wrapperClassName="relative w-full h-0 pb-[75%] overflow-hidden rounded-lg bg-white"
                         decoding="async"
+                        loading="lazy"
+                        sizes="(max-width: 640px) 50vw, (max-width: 1024px) 25vw, 240px"
                         onError={(e) => {
                           (e.currentTarget as HTMLImageElement).src =
                             "/images/img1.jpg";
@@ -470,10 +476,12 @@ export default function PrintingServicePage() {
 
         <SafeImg
           height="250"
+          sizes="100vw"
           src="/images/Banner2.jpg"
           alt="Quality printing banner"
           className="block bg-[#D9D9D9] w-full h-auto"
           decoding="async"
+          loading="lazy"
         />
 
         <section aria-label="Secondary carousel">

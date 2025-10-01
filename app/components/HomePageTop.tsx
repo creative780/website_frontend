@@ -1,13 +1,26 @@
+// Front_End/app/components/MobileTopBar.tsx
 "use client";
 
-import { useState, useEffect, useRef, useCallback, useMemo, useId } from "react";
+import React, {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+  useId,
+  useDeferredValue,
+  memo,
+} from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
-import LoginModal from "../components/LoginModal";
 import { API_BASE_URL } from "../utils/api";
 import { onAuthStateChanged, signOut, User } from "firebase/auth";
 import { doc, getDoc } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
 import SafeImage, { SafeImg } from "./SafeImage";
+
+/** Lazy-load the modal to drop JS on first paint (TBT win) */
+const LoginModal = dynamic(() => import("../components/LoginModal"), { ssr: false });
 
 /** FRONTEND KEY helper (adds header X-Frontend-Key) — keep headers minimal to avoid CORS preflight */
 const FRONTEND_KEY = (process.env.NEXT_PUBLIC_FRONTEND_KEY || "").trim();
@@ -77,7 +90,81 @@ type Prod = {
   subName: string;
 };
 
-export default function MobileTopBar() {
+/* ============================== Fuzzy Search (module scope to avoid re-create) =============================== */
+const norm = (s: string) => s.toLowerCase().normalize("NFKD").replace(/\p{Diacritic}/gu, "");
+
+function editDistance(a: string, b: string) {
+  const A = a;
+  const B = b;
+  const al = A.length;
+  const bl = B.length;
+  const INF = al + bl;
+  const da: Record<string, number> = {};
+  const d = Array.from({ length: al + 2 }, () => Array(bl + 2).fill(0));
+  d[0][0] = INF;
+  for (let i = 0; i <= al; i++) {
+    d[i + 1][1] = i;
+    d[i + 1][0] = INF;
+  }
+  for (let j = 0; j <= bl; j++) {
+    d[1][j + 1] = j;
+    d[0][j + 1] = INF;
+  }
+  for (let i = 1; i <= al; i++) {
+    let db = 0;
+    for (let j = 1; j <= bl; j++) {
+      const i1 = da[B[j - 1]] || 0;
+      const j1 = db;
+      let cost = 1;
+      if (A[i - 1] === B[j - 1]) {
+        cost = 0;
+        db = j;
+      }
+      d[i + 1][j + 1] = Math.min(
+        d[i][j] + cost,
+        d[i + 1][j] + 1,
+        d[i][j + 1] + 1,
+        d[i1][j1] + (i - i1 - 1) + 1 + (j - j1 - 1)
+      );
+    }
+    da[A[i - 1]] = i;
+  }
+  return d[al + 1][bl + 1];
+}
+
+const similarity = (a: string, b: string) => {
+  const A = norm(a);
+  const B = norm(b);
+  if (!A || !B) return 0;
+  if (B.includes(A)) {
+    return Math.min(1, 0.8 + Math.max(0, (A.length / B.length) * 0.2));
+  }
+  const dist = editDistance(A, B);
+  const maxLen = Math.max(A.length, B.length);
+  return 1 - dist / Math.max(1, maxLen);
+};
+
+type Scored<T> = { item: T; score: number };
+function topMatches<T extends { name: string }>(arr: T[], q: string, minScore = 0.45, limit = 50): Scored<T>[] {
+  const Q = q.trim();
+  if (!Q) return [];
+  const results: Scored<T>[] = [];
+  const Qn = norm(Q);
+  for (const it of arr) {
+    const s = similarity(Qn, it.name);
+    if (s >= minScore) results.push({ item: it, score: s });
+  }
+  results.sort((a, b) => b.score - a.score);
+  return results.slice(0, limit);
+}
+
+function slugify(str: string) {
+  return str.toLowerCase().trim().replace(/\s+/g, "-");
+}
+
+/* ============================================================================================================= */
+
+function MobileTopBarInner() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
   const sidebarRef = useRef<HTMLDivElement>(null);
@@ -107,7 +194,9 @@ export default function MobileTopBar() {
   const [error, setError] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState("");
-  const [debouncedQuery, setDebouncedQuery] = useState("");
+  /** Use deferred value to let typing stay snappy while we compute (TBT/INP win) */
+  const debouncedQuery = useDeferredValue(searchQuery);
+
   const scrollerRef = useRef<HTMLDivElement>(null);
   const ITEMS_PER_LOAD = 20;
   const [loadedCount, setLoadedCount] = useState(ITEMS_PER_LOAD);
@@ -142,12 +231,6 @@ export default function MobileTopBar() {
     };
   }, []);
 
-  // Debounce typing (250ms)
-  useEffect(() => {
-    const t = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 250);
-    return () => clearTimeout(t);
-  }, [searchQuery]);
-
   // Fetch nav items — live fetch exactly once; no cache; bust intermediaries with a timestamp param
   useEffect(() => {
     let cancelled = false;
@@ -177,6 +260,8 @@ export default function MobileTopBar() {
 
   // Sidebar open/close side-effects + focus management
   useEffect(() => {
+    if (!isMenuOpen) return;
+
     const handleClickOutside = (event: MouseEvent) => {
       if (sidebarRef.current && !sidebarRef.current.contains(event.target as Node)) {
         setIsMenuOpen(false);
@@ -186,30 +271,30 @@ export default function MobileTopBar() {
       if (e.key === "Escape") setIsMenuOpen(false);
     };
 
-    if (isMenuOpen) {
-      document.body.style.overflow = "hidden";
-      document.addEventListener("mousedown", handleClickOutside);
-      document.addEventListener("keydown", handleEscape);
-      // focus first focusable inside sidebar
-      requestAnimationFrame(() => {
-        const firstBtn = sidebarRef.current?.querySelector<HTMLElement>("button, a, input, [tabindex]:not([tabindex='-1'])");
-        firstBtn?.focus();
-      });
-    } else {
-      document.body.style.overflow = "auto";
-      // return focus to launcher for a11y
-      launcherBtnRef.current?.focus();
-    }
+    document.body.style.overflow = "hidden";
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("keydown", handleEscape);
+
+    // focus first focusable inside sidebar
+    requestAnimationFrame(() => {
+      const firstBtn = sidebarRef.current?.querySelector<HTMLElement>(
+        "button, a, input, [tabindex]:not([tabindex='-1'])"
+      );
+      firstBtn?.focus();
+    });
 
     return () => {
       document.body.style.overflow = "auto";
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleEscape);
+      // return focus to launcher for a11y
+      launcherBtnRef.current?.focus();
     };
   }, [isMenuOpen]);
 
-  // Close search dropdown on outside click or Esc (inside sidebar)
+  // Close search dropdown on outside click or Esc — only when open (less listeners)
   useEffect(() => {
+    if (!showSearch) return;
     function handleClickOutside(e: MouseEvent) {
       if (searchWrapRef.current && !searchWrapRef.current.contains(e.target as Node)) {
         setShowSearch(false);
@@ -224,40 +309,44 @@ export default function MobileTopBar() {
       document.removeEventListener("mousedown", handleClickOutside);
       document.removeEventListener("keydown", handleEsc);
     };
-  }, []);
+  }, [showSearch]);
 
   // Infinite-ish loading reset on new query
   useEffect(() => setLoadedCount(ITEMS_PER_LOAD), [debouncedQuery]);
 
-  // Infinite-ish scrolling (passive)
+  // Infinite-ish scrolling (passive + rAF coalesced)
   useEffect(() => {
-    function onScroll() {
-      const el = scrollerRef.current;
-      if (!el) return;
-      const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
-      if (nearBottom) setLoadedCount((c) => c + ITEMS_PER_LOAD);
-    }
     const el = scrollerRef.current;
     if (!el) return;
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      el.removeEventListener("scroll", onScroll as EventListener);
+
+    let ticking = false;
+    const onScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
+        if (nearBottom) setLoadedCount((c) => c + ITEMS_PER_LOAD);
+        ticking = false;
+      });
     };
+
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll as EventListener);
   }, []);
 
   const toggleCategory = useCallback((name: string) => {
     setExpandedCategory((prev) => (prev === name ? null : name));
   }, []);
 
-  // Slugify
-  const slugify = useCallback((str: string) => str.toLowerCase().trim().replace(/\s+/g, "-"), []);
-
   const openModal = useCallback((mode: "signin" | "signup") => {
     setModalMode(mode);
     setIsModalVisible(true);
   }, []);
   const closeModal = useCallback(() => setIsModalVisible(false), []);
-  const toggleModalMode = useCallback(() => setModalMode((prev) => (prev === "signin" ? "signup" : "signin")), []);
+  const toggleModalMode = useCallback(
+    () => setModalMode((prev) => (prev === "signin" ? "signup" : "signin")),
+    []
+  );
 
   /* ---------- Auth state: Firebase + pseudo ---------- */
   useEffect(() => {
@@ -417,73 +506,6 @@ export default function MobileTopBar() {
 
   const quickBadges = useMemo<string[]>(() => (navData || []).map((c) => c.name), [navData]);
 
-  /* ============================== Fuzzy Search =============================== */
-  const norm = (s: string) => s.toLowerCase().normalize("NFKD").replace(/\p{Diacritic}/gu, "");
-
-  function editDistance(a: string, b: string) {
-    const al = a.length;
-    const bl = b.length;
-    const INF = al + bl;
-    const da: Record<string, number> = {};
-    const d = Array.from({ length: al + 2 }, () => Array(bl + 2).fill(0));
-    d[0][0] = INF;
-    for (let i = 0; i <= al; i++) {
-      d[i + 1][1] = i;
-      d[i + 1][0] = INF;
-    }
-    for (let j = 0; j <= bl; j++) {
-      d[1][j + 1] = j;
-      d[0][j + 1] = INF;
-    }
-    for (let i = 1; i <= al; i++) {
-      let db = 0;
-      for (let j = 1; j <= bl; j++) {
-        const i1 = da[b[j - 1]] || 0;
-        const j1 = db;
-        let cost = 1;
-        if (a[i - 1] === b[j - 1]) {
-          cost = 0;
-          db = j;
-        }
-        d[i + 1][j + 1] = Math.min(
-          d[i][j] + cost,
-          d[i + 1][j] + 1,
-          d[i][j + 1] + 1,
-          d[i1][j1] + (i - i1 - 1) + 1 + (j - j1 - 1)
-        );
-      }
-      da[a[i - 1]] = i;
-    }
-    return d[al + 1][bl + 1];
-  }
-
-  const similarity = (a: string, b: string) => {
-    const A = norm(a);
-    const B = norm(b);
-    if (!A || !B) return 0;
-    if (B.includes(A)) {
-      return Math.min(1, 0.8 + Math.max(0, (A.length / B.length) * 0.2));
-    }
-    const dist = editDistance(A, B);
-    const maxLen = Math.max(A.length, B.length);
-    return 1 - dist / Math.max(1, maxLen);
-  };
-
-  type Scored<T> = { item: T; score: number };
-
-  function topMatches<T extends { name: string }>(arr: T[], q: string, minScore = 0.45, limit = 50): Scored<T>[] {
-    const Q = q.trim();
-    if (!Q) return [];
-    const Qn = norm(Q);
-    const results: Scored<T>[] = [];
-    for (const it of arr) {
-      const s = similarity(Qn, it.name);
-      if (s >= minScore) results.push({ item: it, score: s });
-    }
-    results.sort((a, b) => b.score - a.score);
-    return results.slice(0, limit);
-  }
-
   function detectIntent(q: string) {
     const cm = topMatches(cats, q, 0.55, 5);
     const sm = topMatches(subs, q, 0.5, 5);
@@ -636,14 +658,14 @@ export default function MobileTopBar() {
     // Force Poppins regardless of global config
     <div style={{ fontFamily: "var(--font-poppins), Arial, Helvetica, sans-serif" }}>
       {/* Mobile Top Bar */}
-      <div className="md:hidden flex items-center justify-between p-4 bg-[#891F1A] text-white fixed top-0 left-0 right-0 z-30">
+      <div className="md:hidden flex items-center justify-between p-4 bg-[#891F1A] text-white fixed top-0 left-0 right-0 z-30 min-h-[56px]">
         <button
           ref={launcherBtnRef}
           onClick={() => setIsMenuOpen(true)}
           aria-label="Open menu"
           aria-haspopup="dialog"
           aria-expanded={isMenuOpen}
-          className="font-medium"
+          className="font-medium inline-flex items-center justify-center min-w-[44px] min-h-[44px]"
           type="button"
         >
           <svg className="w-6 h-6" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
@@ -666,7 +688,9 @@ export default function MobileTopBar() {
             }}
           />
         </div>
-        <div className="text-sm font-medium" aria-label="Contact phone">+971-123-456-789</div>
+        <div className="text-sm font-medium" aria-label="Contact phone">
+          +971-123-456-789
+        </div>
       </div>
 
       {/* Overlay */}
@@ -678,324 +702,333 @@ export default function MobileTopBar() {
         />
       )}
 
-      {/* Sidebar */}
-      <aside
-        ref={sidebarRef}
-        className={`fixed top-0 right-0 h-full bg-white text-black z-50 transition-transform duration-300 ease-in-out shadow-2xl w-3/5 max-w-xs transform ${
-          isMenuOpen ? "translate-x-0" : "translate-x-full"
-        }`}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={sidebarTitleId}
-        aria-describedby="mobile-menu-desc"
-      >
-        <p id="mobile-menu-desc" className="sr-only">
-          Navigation drawer with search, categories, and account actions.
-        </p>
+      {/* Sidebar — mount only when open to cut DOM cost; CLS-safe width; content-visibility for paint holdback */}
+      {isMenuOpen && (
+        <aside
+          ref={sidebarRef}
+          className="fixed top-0 right-0 h-full bg-white text-black z-50 shadow-2xl w-3/5 max-w-xs transition-transform duration-300 ease-in-out translate-x-0 will-change-transform"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={sidebarTitleId}
+          aria-describedby="mobile-menu-desc"
+          style={{ contentVisibility: "auto", containIntrinsicSize: "1px 600px" as any }}
+        >
+          <p id="mobile-menu-desc" className="sr-only">
+            Navigation drawer with search, categories, and account actions.
+          </p>
 
-        <div className="flex flex-col h-full overflow-y-auto">
-          <div className="flex items-center justify-between">
-            <h2 id={sidebarTitleId} className="px-4 pt-4 text-base font-semibold">
-              Menu
-            </h2>
-            <button
-              onClick={() => setIsMenuOpen(false)}
-              className="self-end p-4 font-medium"
-              aria-label="Close menu"
-              type="button"
-            >
-              <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
-
-          {/* Search */}
-          <div className="px-4 mb-3" ref={searchWrapRef}>
-            <div
-              className="relative"
-              onClick={() => {
-                setShowSearch(true);
-                searchInputRef.current?.focus();
-              }}
-            >
-              <input
-                ref={searchInputRef}
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onFocus={() => setShowSearch(true)}
-                placeholder={loading ? "Loading items…" : "Type to explore..."}
-                className="w-full py-2 pl-10 pr-4 border rounded-lg focus:outline-none focus:ring-1 focus:ring-gray-400 text-black font-normal"
-                aria-label="Search"
-                aria-controls={searchListboxId}
-                disabled={loading}
-              />
-              <svg
-                className="w-5 h-5 absolute left-3 top-2.5 text-gray-400"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth={2}
-                aria-hidden="true"
+          <div className="flex flex-col h-full overflow-y-auto">
+            <div className="flex items-center justify-between">
+              <h2 id={sidebarTitleId} className="px-4 pt-4 text-base font-semibold">
+                Menu
+              </h2>
+              <button
+                onClick={() => setIsMenuOpen(false)}
+                className="self-end p-4 font-medium inline-flex items-center justify-center min-w-[44px] min-h-[44px]"
+                aria-label="Close menu"
+                type="button"
               >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
+                <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </div>
 
-            {/* DROPDOWN PANEL */}
-            {showSearch && (
+            {/* Search */}
+            <div className="px-4 mb-3" ref={searchWrapRef}>
               <div
-                id={searchListboxId}
-                className="mt-2 w-full bg-white rounded-lg border border-gray-200 shadow-lg z-50"
-                role="listbox"
-                aria-label="Search suggestions"
-                aria-live="polite"
+                className="relative"
+                onClick={() => {
+                  setShowSearch(true);
+                  searchInputRef.current?.focus();
+                }}
               >
-                <p className="px-3 pt-2 text-[11px] text-gray-500 font-light">
-                  {loading && "Fetching catalog…"}
-                  {!loading && !error && quickBadges.length > 0 && "Quick categories:"}
-                  {!loading && !error && quickBadges.length === 0 && "No categories found."}
-                  {error && <span className="text-red-600 font-normal">{error}</span>}
-                </p>
-
-                {quickBadges.length > 0 && (
-                  <div className="px-3 pb-2 pt-1 flex flex-wrap gap-2 border-b border-gray-100">
-                    {quickBadges.slice(0, 10).map((b) => (
-                      <button
-                        key={b}
-                        type="button"
-                        className="text-[11px] rounded-full px-2.5 py-1 transition text-white bg-[#8B1C1C] hover:bg-[#6f1414] font-medium"
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          onChipClick(b);
-                        }}
-                        aria-label={`Filter by ${b}`}
-                      >
-                        {b}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {debouncedQuery && didYouMean.length > 0 && (
-                  <div className="px-3 py-2 text-[11px] text-gray-600 border-b border-gray-100">
-                    <span className="font-light">Did you mean: </span>
-                    {didYouMean.map((s, i) => (
-                      <button
-                        key={s + i}
-                        className="underline decoration-dotted mr-2 hover:text-[#8B1C1C] font-medium"
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          setSearchQuery(s);
-                        }}
-                        aria-label={`Use suggestion ${s}`}
-                        type="button"
-                      >
-                        {s}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {debouncedQuery ? (
-                  <div ref={scrollerRef} className="max-h-72 overflow-y-auto">
-                    {visibleItems.length ? (
-                      <ul className="divide-y divide-gray-100">
-                        {visibleItems.map((it) => {
-                          if (it.kind === "header") {
-                            return (
-                              <li key={it.key} className="py-1 bg-white text-black sticky top-0 z-10">
-                                <h3 className="px-3 py-1 text-[11px] font-medium uppercase text-red-700">{it.text}</h3>
-                              </li>
-                            );
-                          }
-                          if (it.kind === "chips") {
-                            return (
-                              <li key={it.key} className="px-3 py-2 bg-white text-black">
-                                <div className="flex flex-wrap gap-2">
-                                  {it.chips.map((c, idx) => (
-                                    <button
-                                      key={c.text + idx}
-                                      className="text-[11px] rounded-full px-2.5 py-1 bg-gray-100 hover:bg-gray-200 font-medium"
-                                      onMouseDown={(e) => {
-                                        e.preventDefault();
-                                        onChipClick(c.text);
-                                      }}
-                                      type="button"
-                                    >
-                                      {c.text}
-                                    </button>
-                                  ))}
-                                </div>
-                              </li>
-                            );
-                          }
-                          const p = it.prod;
-                          const imgObj = p.images?.[0];
-                          const img = imgObj?.url || "/images/default.jpg";
-                          const alt = imgObj?.alt_text || p.name || "Product";
-                          return (
-                            <li key={it.key}>
-                              <Link
-                                href={safeUrl(
-                                  p.url,
-                                  `/home/${slugify(p.catName)}/${slugify(p.subName)}/products/${p.id}`
-                                )}
-                                prefetch
-                                className="block px-3 py-3 hover:bg-gray-50"
-                                onClick={() => setIsMenuOpen(false)}
-                                role="option"
-                              >
-                                <div className="flex items-center gap-3">
-                                  <SafeImg
-                                    src={img}
-                                    alt={alt}
-                                    className="w-12 h-12 rounded-md object-cover shrink-0"
-                                    width={48}
-                                    height={48}
-                                    onError={(e: React.SyntheticEvent<HTMLImageElement>) => {
-                                      const t = e.currentTarget;
-                                      t.onerror = null;
-                                      t.src = "/images/default.jpg";
-                                    }}
-                                    loading="lazy"
-                                    decoding="async"
-                                  />
-                                  <div className="min-w-0 flex-1">
-                                    <span className="block font-medium text-sm text-gray-900 truncate">{p.name}</span>
-                                    <small className="text-[11px] text-gray-600 font-light">
-                                      {p.subName} • <span className="text-gray-500">{p.catName}</span>
-                                    </small>
-                                  </div>
-                                </div>
-                              </Link>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    ) : (
-                      <p className="px-3 py-5 text-sm text-gray-500 font-normal">
-                        No matches for “{searchQuery}”. Try another keyword.
-                      </p>
-                    )}
-                  </div>
-                ) : (
-                  <p className="px-3 py-3 text-[11px] text-gray-500 font-light">
-                    Start typing a <strong className="font-bold text-red-700">Category</strong>,
-                    <strong className="font-bold text-red-700"> Subcategory</strong>, or a
-                    <strong className="font-bold text-red-700"> Product</strong>.
-                  </p>
-                )}
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onFocus={() => setShowSearch(true)}
+                  placeholder={loading ? "Loading items…" : "Type to explore..."}
+                  className="w-full py-2 pl-10 pr-4 border rounded-lg focus:outline-none focus:ring-1 focus:ring-gray-400 text-black font-normal"
+                  aria-label="Search"
+                  aria-controls={searchListboxId}
+                  disabled={loading}
+                />
+                <svg
+                  className="w-5 h-5 absolute left-3 top-2.5 text-gray-400"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  aria-hidden="true"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
               </div>
-            )}
-          </div>
 
-          {/* Categories */}
-          <nav className="border-b border-gray-300 pb-4 px-4" aria-label="Mobile categories">
-            <h2 className="text-base font-semibold mb-2">Categories</h2>
-            <ul className="space-y-2">
-              {navData.map((cat) => {
-                // Prefer backend-provided slug if present
-                const catSlug = cat.url || slugify(cat.name);
-                const catUrl = `/home/${catSlug}`;
-                const isExpanded = expandedCategory === cat.name;
-                const controlId = `sub-list-${String(cat.id)}`;
-                return (
-                  <li key={String(cat.id)}>
-                    <div className="flex justify-between items-center">
-                      <Link href={catUrl} prefetch className="font-medium hover:text-red-700" onClick={() => setIsMenuOpen(false)}>
-                        {cat.name}
-                      </Link>
-                      {cat.subcategories?.length > 0 && (
+              {/* DROPDOWN PANEL */}
+              {showSearch && (
+                <div
+                  id={searchListboxId}
+                  className="mt-2 w-full bg-white rounded-lg border border-gray-200 shadow-lg z-50"
+                  role="listbox"
+                  aria-label="Search suggestions"
+                  aria-live="polite"
+                  style={{ contentVisibility: "auto", containIntrinsicSize: "1px 300px" as any }}
+                >
+                  <p className="px-3 pt-2 text-[11px] text-gray-500 font-light">
+                    {loading && "Fetching catalog…"}
+                    {!loading && !error && quickBadges.length > 0 && "Quick categories:"}
+                    {!loading && !error && quickBadges.length === 0 && "No categories found."}
+                    {error && <span className="text-red-600 font-normal">{error}</span>}
+                  </p>
+
+                  {quickBadges.length > 0 && (
+                    <div className="px-3 pb-2 pt-1 flex flex-wrap gap-2 border-b border-gray-100">
+                      {quickBadges.slice(0, 10).map((b) => (
                         <button
-                          onClick={() => toggleCategory(cat.name)}
-                          aria-label={`Toggle subcategories for ${cat.name}`}
-                          aria-expanded={isExpanded}
-                          aria-controls={controlId}
-                          className="font-medium"
+                          key={b}
+                          type="button"
+                          className="text-[11px] rounded-full px-2.5 py-1 transition text-white bg-[#8B1C1C] hover:bg-[#6f1414] font-medium"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            onChipClick(b);
+                          }}
+                          aria-label={`Filter by ${b}`}
+                        >
+                          {b}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {debouncedQuery && didYouMean.length > 0 && (
+                    <div className="px-3 py-2 text-[11px] text-gray-600 border-b border-gray-100">
+                      <span className="font-light">Did you mean: </span>
+                      {didYouMean.map((s, i) => (
+                        <button
+                          key={s + i}
+                          className="underline decoration-dotted mr-2 hover:text-[#8B1C1C] font-medium"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            setSearchQuery(s);
+                          }}
+                          aria-label={`Use suggestion ${s}`}
                           type="button"
                         >
-                          <svg
-                            className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-180" : ""}`}
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth={2}
-                            aria-hidden="true"
-                          >
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                          </svg>
+                          {s}
                         </button>
+                      ))}
+                    </div>
+                  )}
+
+                  {debouncedQuery ? (
+                    <div ref={scrollerRef} className="max-h-72 overflow-y-auto">
+                      {visibleItems.length ? (
+                        <ul className="divide-y divide-gray-100">
+                          {visibleItems.map((it) => {
+                            if (it.kind === "header") {
+                              return (
+                                <li key={it.key} className="py-1 bg-white text-black sticky top-0 z-10">
+                                  <h3 className="px-3 py-1 text-[11px] font-medium uppercase text-red-700">
+                                    {it.text}
+                                  </h3>
+                                </li>
+                              );
+                            }
+                            if (it.kind === "chips") {
+                              return (
+                                <li key={it.key} className="px-3 py-2 bg-white text-black">
+                                  <div className="flex flex-wrap gap-2">
+                                    {it.chips.map((c, idx) => (
+                                      <button
+                                        key={c.text + idx}
+                                        className="text-[11px] rounded-full px-2.5 py-1 bg-gray-100 hover:bg-gray-200 font-medium"
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+                                          onChipClick(c.text);
+                                        }}
+                                        type="button"
+                                      >
+                                        {c.text}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </li>
+                              );
+                            }
+                            const p = it.prod;
+                            const imgObj = p.images?.[0];
+                            const img = imgObj?.url || "/images/default.jpg";
+                            const alt = imgObj?.alt_text || p.name || "Product";
+                            return (
+                              <li key={it.key}>
+                                <Link
+                                  href={safeUrl(
+                                    p.url,
+                                    `/home/${slugify(p.catName)}/${slugify(p.subName)}/products/${p.id}`
+                                  )}
+                                  prefetch
+                                  className="block px-3 py-3 hover:bg-gray-50"
+                                  onClick={() => setIsMenuOpen(false)}
+                                  role="option"
+                                >
+                                  <div className="flex items-center gap-3">
+                                    <SafeImg
+                                      src={img}
+                                      alt={alt}
+                                      className="w-12 h-12 rounded-md object-cover shrink-0"
+                                      width={48}
+                                      height={48}
+                                      onError={(e: React.SyntheticEvent<HTMLImageElement>) => {
+                                        const t = e.currentTarget;
+                                        t.onerror = null;
+                                        t.src = "/images/default.jpg";
+                                      }}
+                                      loading="lazy"
+                                      decoding="async"
+                                    />
+                                    <div className="min-w-0 flex-1">
+                                      <span className="block font-medium text-sm text-gray-900 truncate">
+                                        {p.name}
+                                      </span>
+                                      <small className="text-[11px] text-gray-600 font-light">
+                                        {p.subName} • <span className="text-gray-500">{p.catName}</span>
+                                      </small>
+                                    </div>
+                                  </div>
+                                </Link>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      ) : (
+                        <p className="px-3 py-5 text-sm text-gray-500 font-normal">
+                          No matches for “{searchQuery}”. Try another keyword.
+                        </p>
                       )}
                     </div>
-                    {isExpanded && (
-                      <ul id={controlId} className="mt-1 pl-4 space-y-1 text-sm text-gray-700">
-                        {cat.subcategories?.map((sub) => {
-                          const subSlug = sub.url || slugify(sub.name);
-                          const subUrl = `/home/${catSlug}/${subSlug}`;
-                          return (
-                            <li key={String(sub.id)}>
-                              <Link
-                                href={subUrl}
-                                prefetch
-                                className="hover:underline font-medium"
-                                onClick={() => setIsMenuOpen(false)}
-                              >
-                                {sub.name}
-                              </Link>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          </nav>
+                  ) : (
+                    <p className="px-3 py-3 text-[11px] text-gray-500 font-light">
+                      Start typing a <strong className="font-bold text-red-700">Category</strong>,
+                      <strong className="font-bold text-red-700"> Subcategory</strong>, or a
+                      <strong className="font-bold text-red-700"> Product</strong>.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
 
-          {/* Info and Actions */}
-          <section className="flex flex-col space-y-3 px-4 py-4 text-sm" aria-label="Quick links">
-            <p className="font-normal">
-              <span className="font-medium">Email:</span> hi@printshop.com
-            </p>
-            <Link href="/home" prefetch className="hover:text-gray-700 font-medium" onClick={() => setIsMenuOpen(false)}>
-              Home
-            </Link>
-            <Link href="/about" prefetch className="hover:text-gray-700 font-medium" onClick={() => setIsMenuOpen(false)}>
-              About
-            </Link>
-            <Link href="/checkout2" prefetch className="hover:text-gray-700 font-medium" onClick={() => setIsMenuOpen(false)}>
-              Cart
-            </Link>
-            <Link href="/orders" prefetch className="hover:text-gray-700 font-medium" onClick={() => setIsMenuOpen(false)}>
-              My Orders
-            </Link>
-            <Link href="/blog" prefetch className="hover:text-gray-700 font-medium" onClick={() => setIsMenuOpen(false)}>
-              Blog
-            </Link>
-            <Link href="/contact" prefetch className="hover:text-gray-700 font-medium" onClick={() => setIsMenuOpen(false)}>
-              Contact
-            </Link>
-            <small className="font-light">UAE</small>
+            {/* Categories */}
+            <nav className="border-b border-gray-300 pb-4 px-4" aria-label="Mobile categories">
+              <h2 className="text-base font-semibold mb-2">Categories</h2>
+              <ul className="space-y-2">
+                {navData.map((cat) => {
+                  // Prefer backend-provided slug if present
+                  const catSlug = cat.url || slugify(cat.name);
+                  const catUrl = `/home/${catSlug}`;
+                  const isExpanded = expandedCategory === cat.name;
+                  const controlId = `sub-list-${String(cat.id)}`;
+                  return (
+                    <li key={String(cat.id)}>
+                      <div className="flex justify-between items-center">
+                        <Link
+                          href={catUrl}
+                          prefetch
+                          className="font-medium hover:text-red-700"
+                          onClick={() => setIsMenuOpen(false)}
+                        >
+                          {cat.name}
+                        </Link>
+                        {cat.subcategories?.length > 0 && (
+                          <button
+                            onClick={() => toggleCategory(cat.name)}
+                            aria-label={`Toggle subcategories for ${cat.name}`}
+                            aria-expanded={isExpanded}
+                            aria-controls={controlId}
+                            className="font-medium inline-flex items-center justify-center min-w-[40px] min-h-[40px]"
+                            type="button"
+                          >
+                            <svg
+                              className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth={2}
+                              aria-hidden="true"
+                            >
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                      {isExpanded && (
+                        <ul id={controlId} className="mt-1 pl-4 space-y-1 text-sm text-gray-700">
+                          {cat.subcategories?.map((sub) => {
+                            const subSlug = sub.url || slugify(sub.name);
+                            const subUrl = `/home/${catSlug}/${subSlug}`;
+                            return (
+                              <li key={String(sub.id)}>
+                                <Link
+                                  href={subUrl}
+                                  prefetch
+                                  className="hover:underline font-medium"
+                                  onClick={() => setIsMenuOpen(false)}
+                                >
+                                  {sub.name}
+                                </Link>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </nav>
 
-            <div className="login-signup">
-              {!(firebaseUser || pseudoLoggedIn) ? (
-                <button onClick={() => openModal("signin")} className="flex items-center py-1.5 w-full font-medium" type="button">
-                  <SafeImage
-                    src="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/icons/person.svg"
-                    alt=""
-                    width={20}
-                    height={20}
-                    loading="lazy"
-                    decoding="async"
-                    className="mr-2"
-                    aria-hidden="true"
-                  />
-                  <span className="text-sm text-black">Login</span>
-                </button>
-              ) : (
-                <div className="flex items-center py-1.5 justify-between">
-                  <div className="flex items-center">
+            {/* Info and Actions */}
+            <section className="flex flex-col space-y-3 px-4 py-4 text-sm" aria-label="Quick links">
+              <p className="font-normal">
+                <span className="font-medium">Email:</span> hi@printshop.com
+              </p>
+              <Link href="/home" prefetch className="hover:text-gray-700 font-medium" onClick={() => setIsMenuOpen(false)}>
+                Home
+              </Link>
+              <Link href="/about" prefetch className="hover:text-gray-700 font-medium" onClick={() => setIsMenuOpen(false)}>
+                About
+              </Link>
+              <Link
+                href="/checkout2"
+                prefetch
+                className="hover:text-gray-700 font-medium"
+                onClick={() => setIsMenuOpen(false)}
+              >
+                Cart
+              </Link>
+              <Link href="/orders" prefetch className="hover:text-gray-700 font-medium" onClick={() => setIsMenuOpen(false)}>
+                My Orders
+              </Link>
+              <Link href="/blog" prefetch className="hover:text-gray-700 font-medium" onClick={() => setIsMenuOpen(false)}>
+                Blog
+              </Link>
+              <Link
+                href="/contact"
+                prefetch
+                className="hover:text-gray-700 font-medium"
+                onClick={() => setIsMenuOpen(false)}
+              >
+                Contact
+              </Link>
+              <small className="font-light">UAE</small>
+
+              <div className="login-signup">
+                {!(firebaseUser || pseudoLoggedIn) ? (
+                  <button
+                    onClick={() => openModal("signin")}
+                    className="flex items-center py-1.5 w-full font-medium"
+                    type="button"
+                  >
                     <SafeImage
                       src="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/icons/person.svg"
                       alt=""
@@ -1006,36 +1039,56 @@ export default function MobileTopBar() {
                       className="mr-2"
                       aria-hidden="true"
                     />
-                    <span className="text-sm text-black font-normal">{username || pseudoName || "User"}</span>
-                  </div>
-                  <button
-                    onClick={handleLogout}
-                    className="ml-3 text-xs px-3 py-1 rounded-full bg-[#8B1C1C] text-white font-medium hover:bg-[#6f1414]"
-                    type="button"
-                    aria-label="Log out"
-                  >
-                    Logout
+                    <span className="text-sm text-black">Login</span>
                   </button>
-                </div>
-              )}
-            </div>
-          </section>
-        </div>
-      </aside>
+                ) : (
+                  <div className="flex items-center py-1.5 justify-between">
+                    <div className="flex items-center">
+                      <SafeImage
+                        src="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/icons/person.svg"
+                        alt=""
+                        width={20}
+                        height={20}
+                        loading="lazy"
+                        decoding="async"
+                        className="mr-2"
+                        aria-hidden="true"
+                      />
+                      <span className="text-sm text-black font-normal">{username || pseudoName || "User"}</span>
+                    </div>
+                    <button
+                      onClick={handleLogout}
+                      className="ml-3 text-xs px-3 py-1 rounded-full bg-[#8B1C1C] text-white font-medium hover:bg-[#6f1414]"
+                      type="button"
+                      aria-label="Log out"
+                    >
+                      Logout
+                    </button>
+                  </div>
+                )}
+              </div>
+            </section>
+          </div>
+        </aside>
+      )}
 
       {/* Auth Modal */}
-      <LoginModal
-        isVisible={isModalVisible}
-        mode={modalMode}
-        nameRef={nameRef}
-        emailRef={emailRef}
-        passwordRef={passwordRef}
-        onClose={closeModal}
-        onAuth={async () => {
-          await syncAfterModalClose();
-        }}
-        toggleMode={toggleModalMode}
-      />
+      {isModalVisible && (
+        <LoginModal
+          isVisible={isModalVisible}
+          mode={modalMode}
+          nameRef={nameRef}
+          emailRef={emailRef}
+          passwordRef={passwordRef}
+          onClose={closeModal}
+          onAuth={async () => {
+            await syncAfterModalClose();
+          }}
+          toggleMode={toggleModalMode}
+        />
+      )}
     </div>
   );
 }
+
+export default memo(MobileTopBarInner);

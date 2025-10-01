@@ -1,20 +1,48 @@
 "use client";
 
-import React, { useCallback, useEffect, useMemo, useRef, useState, memo } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  memo,
+} from "react";
 import { useParams } from "next/navigation";
-import Toastify from "toastify-js";
-import "toastify-js/src/toastify.css";
+import Link from "next/link";
+import Script from "next/script";
+import dynamic from "next/dynamic";
+
 import { API_BASE_URL } from "../../../utils/api";
 import Header from "../../../components/header";
 import Navbar from "../../../components/Navbar";
 import LogoSection from "../../../components/LogoSection";
 import HomePageTop from "../../../components/HomePageTop";
-import CardActionButtons from "../../../components/CardActionButtons";
-import { ChatBot } from "../../../components/ChatBot";
 import Footer from "../../../components/Footer";
-import Link from "next/link";
-import Script from "next/script";
 import { SafeImg } from "../../../components/SafeImage";
+
+/* ──────────────────────────────────────────────────────────────────────────
+   🔧 Lightweight, on-demand Toastify (no upfront JS/CSS cost)
+   ────────────────────────────────────────────────────────────────────────── */
+type ToastifyType = (opts: any) => { showToast: () => void };
+let toastCssInjected = false;
+async function toastify(opts: any) {
+  // @ts-ignore
+  const mod = (await import("toastify-js")).default as ToastifyType;
+  if (!toastCssInjected) {
+    const id = "toastify-css";
+    if (!document.getElementById(id)) {
+      const link = document.createElement("link");
+      link.id = id;
+      link.rel = "stylesheet";
+      link.href =
+        "https://cdn.jsdelivr.net/npm/toastify-js/src/toastify.min.css";
+      document.head.appendChild(link);
+    }
+    toastCssInjected = true;
+  }
+  return mod(opts).showToast();
+}
 
 /* ──────────────────────────────────────────────────────────────────────────
    🔐 Frontend key helper (adds X-Frontend-Key to requests)
@@ -22,7 +50,7 @@ import { SafeImg } from "../../../components/SafeImage";
 const FRONTEND_KEY = (process.env.NEXT_PUBLIC_FRONTEND_KEY || "").trim();
 const withFrontendKey = (init: RequestInit = {}): RequestInit => {
   const headers = new Headers(init.headers || {});
-  headers.set("X-Frontend-Key", FRONTEND_KEY);
+  if (FRONTEND_KEY) headers.set("X-Frontend-Key", FRONTEND_KEY);
   return { ...init, headers };
 };
 
@@ -86,6 +114,8 @@ const StarRating = memo(function StarRating({
               src={fullStarUrl}
               alt=""
               className="w-4 h-4"
+              width={16}
+              height={16}
               loading="lazy"
               aria-hidden="true"
             />
@@ -97,6 +127,8 @@ const StarRating = memo(function StarRating({
               src={halfStarUrl}
               alt=""
               className="w-4 h-4"
+              width={16}
+              height={16}
               loading="lazy"
               aria-hidden="true"
             />
@@ -107,6 +139,8 @@ const StarRating = memo(function StarRating({
             src={emptyStarUrl}
             alt=""
             className="w-4 h-4"
+            width={16}
+            height={16}
             loading="lazy"
             aria-hidden="true"
           />
@@ -116,6 +150,19 @@ const StarRating = memo(function StarRating({
     </div>
   );
 });
+
+/* ──────────────────────────────────────────────────────────────────────────
+   🧩 Split heavy/interactive widgets
+   ────────────────────────────────────────────────────────────────────────── */
+const ChatBot = dynamic(
+  () => import('../../../components/ChatBot').then((m) => m.ChatBot),
+  { ssr: false }
+);
+
+const CardActionButtons = dynamic(
+  () => import("../../../components/CardActionButtons"),
+  { ssr: false, loading: () => null }
+);
 
 export default function SubCategoryPage() {
   const BATCH_SIZE = 100; // keep behavior stable
@@ -177,13 +224,22 @@ export default function SubCategoryPage() {
         setLoading(true);
 
         const [navRes, stockRes] = await Promise.all([
-          fetch(`${API_BASE_URL}/api/show_nav_items/`, withFrontendKey({ cache: "no-store", signal: controller.signal })),
-          fetch(`${API_BASE_URL}/api/show-product/`, withFrontendKey({ cache: "no-store", signal: controller.signal })),
+          fetch(
+            `${API_BASE_URL}/api/show_nav_items/`,
+            withFrontendKey({ cache: "no-store", signal: controller.signal })
+          ),
+          fetch(
+            `${API_BASE_URL}/api/show-product/`,
+            withFrontendKey({ cache: "no-store", signal: controller.signal })
+          ),
         ]);
 
         if (!navRes.ok || !stockRes.ok) throw new Error("Failed to fetch data");
 
-        const [navData, stockData] = await Promise.all([navRes.json(), stockRes.json()]);
+        const [navData, stockData] = await Promise.all([
+          navRes.json(),
+          stockRes.json(),
+        ]);
 
         // Find the current category/subcategory entries
         const matchedCategory = Array.isArray(navData)
@@ -201,28 +257,32 @@ export default function SubCategoryPage() {
         }
 
         // Build product cards, enriching with stock/status from show-product payload
-        const formatted: ProductCard[] = matchedSubcat.products.map((prod: any) => {
-          const stockMatch = Array.isArray(stockData)
-            ? stockData.find((p: any) => `${p.id}` === `${prod.id}`)
-            : undefined;
+        const formatted: ProductCard[] = matchedSubcat.products.map(
+          (prod: any) => {
+            const stockMatch = Array.isArray(stockData)
+              ? stockData.find((p: any) => `${p.id}` === `${prod.id}`)
+              : undefined;
 
-          const image =
-            prod.images?.[0]?.url ||
-            prod.image?.url ||
-            stockMatch?.image ||
-            "/images/img1.jpg";
+            const image =
+              prod.images?.[0]?.url ||
+              prod.image?.url ||
+              stockMatch?.image ||
+              "/images/img1.jpg";
 
-          const badge = `${stockMatch?.stock_status || ""}`.trim() || "Unknown";
+            const badge = `${stockMatch?.stock_status || ""}`.trim() || "Unknown";
 
-          return {
-            id: String(prod.id),
-            name: prod.name ?? "Unnamed Product",
-            image,
-            badge,
-            rating: Number((prod.rating ?? stockMatch?.rating) ?? 0),
-            rating_count: Number((prod.rating_count ?? stockMatch?.rating_count) ?? 0),
-          };
-        });
+            return {
+              id: String(prod.id),
+              name: prod.name ?? "Unnamed Product",
+              image,
+              badge,
+              rating: Number((prod.rating ?? stockMatch?.rating) ?? 0),
+              rating_count: Number(
+                (prod.rating_count ?? stockMatch?.rating_count) ?? 0
+              ),
+            };
+          }
+        );
 
         setAllProducts(formatted);
         setProducts(formatted.slice(0, BATCH_SIZE));
@@ -270,7 +330,7 @@ export default function SubCategoryPage() {
 
         const data = await res.json();
 
-        Toastify({
+        await toastify({
           text: res.ok ? "Added to cart!" : `❌ ${data?.error || "Try again!"}`,
           duration: 3000,
           gravity: "top",
@@ -278,12 +338,9 @@ export default function SubCategoryPage() {
           backgroundColor: res.ok
             ? "linear-gradient(to right, #af4c4cff, #d30000ff)"
             : "linear-gradient(to right, #b00020, #ff5a5a)",
-          style: {
-            borderRadius: "0.75rem",
-            padding: "12px 20px",
-          },
+          style: { borderRadius: "0.75rem", padding: "12px 20px" },
           ariaLive: "polite",
-        }).showToast();
+        });
 
         if (res.ok) {
           setCartIds((prev) => {
@@ -295,7 +352,7 @@ export default function SubCategoryPage() {
         }
       } catch (error) {
         console.error("Cart error:", error);
-        Toastify({
+        await toastify({
           text: "❌ Network error",
           duration: 3000,
           gravity: "top",
@@ -303,7 +360,7 @@ export default function SubCategoryPage() {
           backgroundColor: "linear-gradient(to right, #b00020, #ff5a5a)",
           style: { borderRadius: "0.75rem", padding: "12px 20px" },
           ariaLive: "assertive",
-        }).showToast();
+        });
       }
     },
     [persistCart]
@@ -332,28 +389,29 @@ export default function SubCategoryPage() {
             return next;
           });
 
-          Toastify({
+          await toastify({
             text: "Removed from cart",
             duration: 3000,
             gravity: "top",
             position: "right",
-            backgroundColor: "linear-gradient(to right, #af4c4cff, #d30000ff)",
+            backgroundColor:
+              "linear-gradient(to right, #af4c4cff, #d30000ff)",
             style: { borderRadius: "0.75rem", padding: "12px 20px" },
             ariaLive: "polite",
-          }).showToast();
+          });
         } else {
-          Toastify({
+          await toastify({
             text: `❌ ${data?.error || "Try again!"}`,
             duration: 3000,
             gravity: "top",
             position: "right",
             backgroundColor: "linear-gradient(to right, #b00020, #ff5a5a)",
             ariaLive: "assertive",
-          }).showToast();
+          });
         }
       } catch (error) {
         console.error("Cart error:", error);
-        Toastify({
+        await toastify({
           text: "❌ Network error",
           duration: 3000,
           gravity: "top",
@@ -361,7 +419,7 @@ export default function SubCategoryPage() {
           backgroundColor: "linear-gradient(to right, #b00020, #ff5a5a)",
           style: { borderRadius: "0.75rem", padding: "12px 20px" },
           ariaLive: "assertive",
-        }).showToast();
+        });
       }
     },
     [persistCart]
@@ -378,7 +436,7 @@ export default function SubCategoryPage() {
         product.badge?.toString().trim().toLowerCase() === "out of stock";
 
       if (!cartIds.has(product.id) && isOut) {
-        Toastify({
+        await toastify({
           text: "❌ Out of Stock",
           duration: 2500,
           gravity: "top",
@@ -386,7 +444,7 @@ export default function SubCategoryPage() {
           backgroundColor: "linear-gradient(to right, #b00020, #ff5a5a)",
           style: { borderRadius: "0.75rem", padding: "12px 20px" },
           ariaLive: "polite",
-        }).showToast();
+        });
         return;
       }
 
@@ -402,12 +460,12 @@ export default function SubCategoryPage() {
   const favInvokeAt = useRef<Record<string, number>>({});
   const toastStamp = useRef<Record<string, number>>({});
 
-  const toastOnce = useCallback((key: string, text: string, ok: boolean) => {
+  const toastOnce = useCallback(async (key: string, text: string, ok: boolean) => {
     const now = Date.now();
     if (toastStamp.current[key] && now - toastStamp.current[key] < 400) return;
     toastStamp.current[key] = now;
 
-    Toastify({
+    await toastify({
       text,
       duration: 2500,
       gravity: "top",
@@ -417,11 +475,11 @@ export default function SubCategoryPage() {
         : "linear-gradient(to right, #b00020, #ff5a5a)",
       style: { borderRadius: "0.75rem", padding: "12px 20px" },
       ariaLive: "polite",
-    }).showToast();
+    });
   }, []);
 
   const handleToggleFavorite = useCallback(
-    (id: string) => (e?: React.MouseEvent) => {
+    (id: string) => async (e?: React.MouseEvent) => {
       e?.stopPropagation?.();
       // @ts-ignore
       e?.nativeEvent?.stopImmediatePropagation?.();
@@ -549,6 +607,7 @@ export default function SubCategoryPage() {
   /* ──────────────────────────────────────────────────────────────────────
      JSON-LD (SEO): Breadcrumb + ItemList of products
      ────────────────────────────────────────────────────────────────────── */
+  const siteUrl = (process.env.NEXT_PUBLIC_SITE_URL || "").replace(/\/$/, "");
   const breadcrumbLd = {
     "@context": "https://schema.org",
     "@type": "BreadcrumbList",
@@ -557,21 +616,19 @@ export default function SubCategoryPage() {
         "@type": "ListItem",
         position: 1,
         name: "Home",
-        item: `${process.env.NEXT_PUBLIC_SITE_URL || ""}/`,
+        item: `${siteUrl}/`,
       },
       {
         "@type": "ListItem",
         position: 2,
         name: category,
-        item: `${process.env.NEXT_PUBLIC_SITE_URL || ""}/home/${encodeURIComponent(
-          category || ""
-        )}`,
+        item: `${siteUrl}/home/${encodeURIComponent(category || "")}`,
       },
       {
         "@type": "ListItem",
         position: 3,
         name: pageTitle,
-        item: `${process.env.NEXT_PUBLIC_SITE_URL || ""}/home/${encodeURIComponent(
+        item: `${siteUrl}/home/${encodeURIComponent(
           category || ""
         )}/${encodeURIComponent(subcategory || "")}`,
       },
@@ -585,13 +642,16 @@ export default function SubCategoryPage() {
     itemListElement: products.map((p, idx) => ({
       "@type": "ListItem",
       position: idx + 1,
-      url: `${process.env.NEXT_PUBLIC_SITE_URL || ""}/home/${encodeURIComponent(
+      url: `${siteUrl}/home/${encodeURIComponent(
         category || ""
       )}/${encodeURIComponent(subcategory || "")}/products/${p.id}`,
       name: p.name,
     })),
   };
 
+  /* ──────────────────────────────────────────────────────────────────────
+     Render
+     ────────────────────────────────────────────────────────────────────── */
   return (
     <div
       className="flex flex-col bg-white"
@@ -631,7 +691,7 @@ export default function SubCategoryPage() {
             Products list
           </h2>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-8">
-            {products.map((product) => {
+            {products.map((product, index) => {
               const detailHref = `/home/${encodeURIComponent(
                 category!
               )}/${encodeURIComponent(subcategory!)}/products/${product.id}`;
@@ -653,8 +713,8 @@ export default function SubCategoryPage() {
                   <span
                     className={`absolute top-2 left-2 text-xs px-3 py-1 rounded-full z-20 ${
                       product.badge?.toLowerCase().includes("out")
-                        ? "bg-white/20 backdrop-blur text-[#891F1A] font-semibold"
-                        : "bg-[#891F1A]/70 backdrop-blur text-white"
+                        ? "bg-white/80 text-[#891F1A] font-semibold"
+                        : "bg-[#891F1A]/80 text-white"
                     }`}
                     aria-label={`Stock status: ${product.badge}`}
                   >
@@ -669,19 +729,27 @@ export default function SubCategoryPage() {
                     onAddToCart={handleCartToggle(product)}
                   />
 
-                  {/* Image + link (improves SEO & prefetch) */}
+                  {/* Image + link (CLS-safe with explicit sizing) */}
                   <Link href={detailHref} className="relative block w-full">
                     <div className="relative w-full aspect-square overflow-hidden rounded-xl">
                       <SafeImg
                         src={product.image}
                         alt={product.name}
-                        loading="lazy"
                         className="h-full w-full object-cover transition-transform duration-500 ease-out will-change-transform group-hover:scale-105"
-                        onError={(e) => {
+                        overlay={false}
+                        // CLS control: explicit intrinsic size (square)
+                        width={800}
+                        height={800}
+                        // LCP hint for first card
+                        loading={index === 0 ? "eager" : "lazy"}
+                        // @ts-ignore (SafeImg may forward this)
+                        fetchpriority={index === 0 ? "high" : "auto"}
+                        // responsive hint
+                        sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, (max-width: 1536px) 33vw, 20vw"
+                        onError={(e: any) => {
                           e.currentTarget.onerror = null;
                           e.currentTarget.src = "/images/img1.png";
                         }}
-                        overlay={false}
                       />
                     </div>
                   </Link>
@@ -692,7 +760,10 @@ export default function SubCategoryPage() {
                     </Link>
                   </h3>
 
-                  <StarRating rating={product.rating} count={product.rating_count} />
+                  <StarRating
+                    rating={product.rating}
+                    count={product.rating_count}
+                  />
                 </article>
               );
             })}

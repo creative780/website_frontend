@@ -270,7 +270,6 @@ const Modal = ({
   const [formData, setFormData] = useState<any>({
     title: "",
     description: "",
-    longDescription: "",
     sku: "",
     category: "",
     subcategory: "",
@@ -305,6 +304,12 @@ const Modal = ({
     groupedFilters: "",
     processingTime: "",
     shippingClass: [],
+    card1Title: "",
+    card1: "",
+    card2Title: "",
+    card2: "",
+    card3Title: "",
+    card3: "",
   });
 
   const [errors, setErrors] = useState<any>({});
@@ -456,7 +461,6 @@ const Modal = ({
         ...prev,
         title: "",
         description: "",
-        longDescription: "",
         sku: "",
         category: "",
         subcategory: "",
@@ -491,6 +495,12 @@ const Modal = ({
         groupedFilters: "",
         processingTime: "",
         shippingClass: [],
+        card1Title: "",
+        card1: "",
+        card2Title: "",
+        card2: "",
+        card3Title: "",
+        card3: "",
       }));
       setTempMetaKeywords("");
       setTempSizes("");
@@ -515,51 +525,60 @@ const Modal = ({
     // EDIT: fetch all pieces
     (async () => {
       try {
-        const [basicRes, seoRes, variantRes, shipRes, combosRes, attrsRes] =
-          await Promise.all([
-            fetch(
-              `${API_BASE_URL}/api/show_specific_product/`,
-              withFrontendKey({
-                method: "POST",
-                body: JSON.stringify({ product_id: productId }),
-              })
-            ),
-            fetch(
-              `${API_BASE_URL}/api/show_product_seo/`,
-              withFrontendKey({
-                method: "POST",
-                body: JSON.stringify({ product_id: productId }),
-              })
-            ),
-            fetch(
-              `${API_BASE_URL}/api/show_product_variant/`,
-              withFrontendKey({
-                method: "POST",
-                body: JSON.stringify({ product_id: productId }),
-              })
-            ),
-            fetch(
-              `${API_BASE_URL}/api/show_product_shipping_info/`,
-              withFrontendKey({
-                method: "POST",
-                body: JSON.stringify({ product_id: productId }),
-              })
-            ),
-            fetch(
-              `${API_BASE_URL}/api/show_product_variants/`,
-              withFrontendKey({
-                method: "POST",
-                body: JSON.stringify({ product_id: productId }),
-              })
-            ),
-            fetch(
-              `${API_BASE_URL}/api/show_product_attributes/`,
-              withFrontendKey({
-                method: "POST",
-                body: JSON.stringify({ product_id: productId }),
-              })
-            ),
-          ]);
+const [basicRes, seoRes, variantRes, shipRes, combosRes, attrsRes, cardsRes] =
+  await Promise.all([
+    fetch(
+      `${API_BASE_URL}/api/show_specific_product/`,
+      withFrontendKey({
+        method: "POST",
+        body: JSON.stringify({ product_id: productId }),
+      })
+    ),
+    fetch(
+      `${API_BASE_URL}/api/show_product_seo/`,
+      withFrontendKey({
+        method: "POST",
+        body: JSON.stringify({ product_id: productId }),
+      })
+    ),
+    fetch(
+      `${API_BASE_URL}/api/show_product_variant/`,
+      withFrontendKey({
+        method: "POST",
+        body: JSON.stringify({ product_id: productId }),
+      })
+    ),
+    fetch(
+      `${API_BASE_URL}/api/show_product_shipping_info/`,
+      withFrontendKey({
+        method: "POST",
+        body: JSON.stringify({ product_id: productId }),
+      })
+    ),
+    fetch(
+      `${API_BASE_URL}/api/show_product_variants/`,
+      withFrontendKey({
+        method: "POST",
+        body: JSON.stringify({ product_id: productId }),
+      })
+    ),
+    fetch(
+      `${API_BASE_URL}/api/show_product_attributes/`,
+      withFrontendKey({
+        method: "POST",
+        body: JSON.stringify({ product_id: productId }),
+      })
+    ),
+    // 👇 NEW: ShowProductCardAPIView
+    fetch(
+      `${API_BASE_URL}/api/show-product-cards/`,
+      withFrontendKey({
+        method: "POST",
+        body: JSON.stringify({ product_id: productId }),
+      })
+    ),
+  ]);
+
 
         const basic = await parseJsonSafe(basicRes, "show_specific_product");
         const seo = await parseJsonSafe(seoRes, "show_product_seo");
@@ -568,7 +587,7 @@ const Modal = ({
           shipRes,
           "show_product_shipping_info"
         );
-        const combos = await parseJsonSafe(combosRes, "show_product_variants");
+       const combos = await parseJsonSafe(combosRes, "show_product_variants");
 
         // attributes (404 tolerated)
         let attrs: any[] = [];
@@ -580,12 +599,21 @@ const Modal = ({
           }
         }
 
+        // 👇 NEW: product cards (404 tolerated → blank)
+        let cards: any = {};
+        if (cardsRes.status !== 404) {
+          try {
+            cards = await parseJsonSafe(cardsRes, "show-product-cards");
+          } catch {
+            cards = {};
+          }
+        }
+
         // primary product fields (trimmed)
         setFormData((prev: any) => ({
           ...prev,
           title: basic.name || "",
           description: basic.fit_description || "",
-          longDescription: basic.long_description || "",
           sku: basic.id || "",
           category: "",
           subcategory: basic.subcategory?.id || "",
@@ -623,6 +651,13 @@ const Modal = ({
           groupedFilters: seo.grouped_filters || [],
           processingTime: shipping.processing_time || "",
           shippingClass: (shipping.shipping_class || "").split(","),
+          card1Title: cards.card1_title || "",
+card1: cards.card1 || "",
+card2Title: cards.card2_title || "",
+card2: cards.card2 || basic.long_description || "",
+card3Title: cards.card3_title || "",
+card3: cards.card3 || "",
+
         }));
 
         setTempMetaKeywords(
@@ -1430,26 +1465,21 @@ const Modal = ({
           : a
       )
     );
-  const handleOptionImageChange = (
-    attrId: string,
-    optId: string,
-    file: File | null
-  ) => {
-    if (!file) {
-      return updateOption(attrId, optId, {
-        _image_file: null,
-        _image_preview: null,
-        image: null,
-        image_id: null,
-      });
-    }
-    const preview = URL.createObjectURL(file);
-    updateOption(attrId, optId, {
-      _image_file: file,
-      _image_preview: preview,
-      image_id: null,
-    });
+const handleOptionImageChange = (attrId: string, optId: string, file: File | null) => {
+  const revokeIfBlob = (url?: string | null) => {
+    if (url && url.startsWith("blob:")) URL.revokeObjectURL(url);
   };
+  if (!file) {
+    // revoke old preview blob if any
+    const prev = customAttributes.find(a=>a.id===attrId)?.options.find(o=>o.id===optId);
+    revokeIfBlob(prev?._image_preview ?? null);
+    return updateOption(attrId, optId, { _image_file: null, _image_preview: null, image: null, image_id: null });
+  }
+  const preview = URL.createObjectURL(file);
+  const prev = customAttributes.find(a=>a.id===attrId)?.options.find(o=>o.id===optId);
+  revokeIfBlob(prev?._image_preview ?? null);
+  updateOption(attrId, optId, { _image_file: file, _image_preview: preview, image_id: null });
+};
 
   // ---------- Save product (trimmed to the relevant imaging bits) ----------
   const handleSubmit = async (e: any) => {
@@ -1536,7 +1566,6 @@ const Modal = ({
       const commonFields: any = {
         name: formData.title,
         description: formData.description,
-        long_description: formData.longDescription,
         brand_title: formData.brand,
         price: parseFloat(formData.normalPrice) || 0,
         discounted_price: parseFloat(formData.discountedPrice) || 0,
@@ -1575,6 +1604,13 @@ const Modal = ({
         groupedFilters: cleanCommaArray(tempGroupedFilters),
         customAttributes: attributesPayload,
         images_with_meta,
+        card1_title: formData.card1Title,
+        card1: formData.card1,
+        long_description: formData.card2,
+        card2_title: formData.card2Title,
+        card2: formData.card2,
+        card3_title: formData.card3Title,
+        card3: formData.card3,
       };
 
       let res: Response;
@@ -1711,6 +1747,24 @@ const Modal = ({
   useEffect(() => {
     setTagDraft("");
   }, [activePreviewIndex, isPreviewOpen]);
+useEffect(() => {
+  return () => {
+    // Clean up gallery previews
+    previewImages.forEach((img) => {
+      if (img.kind === "file" && img.src?.startsWith("blob:")) {
+        URL.revokeObjectURL(img.src);
+      }
+    });
+    // Clean up option previews
+    customAttributes.forEach((a) =>
+      a.options.forEach((o) => {
+        if (o._image_preview?.startsWith("blob:")) {
+          URL.revokeObjectURL(o._image_preview);
+        }
+      })
+    );
+  };
+}, []);
 
   if (hidden) return null;
 
@@ -1727,64 +1781,69 @@ const Modal = ({
         onClick={(e) => e.stopPropagation()}
       >
         {/* Left: gallery */}
-        <div className="hidden sm:block sm:w-1/2 pr-0 sm:pr-6 h-[420px] shrink-0">
-          {previewImages.length > 0 ? (
-            <div className="space-y-3">
-              <div className="aspect-video w-full overflow-hidden rounded-lg shadow-lg h-[280px] relative">
-                <img
-                  src={previewImages[0].src}
-                  alt={previewImages[0].alt || "Product Preview"}
-                  className="w-full h-full object-cover cursor-zoom-in"
-                  onClick={() => openImageDetailsAt(0)}
-                  onError={(e) => {
-                    (e.currentTarget as HTMLImageElement).src =
-                      "/images/default.jpg";
-                  }}
-                />
-                {previewImages[0].is_primary === true && (
-                  <span className="absolute top-2 left-2 text-xs bg-[#8B1C1C] text-white px-2 py-1 rounded">
-                    Thumbnail
-                  </span>
-                )}
-              </div>
-              <div className="grid grid-cols-3 gap-3">
-                {previewImages.map((img, idx) => (
-                  <div
-                    key={(img.image_id ?? img.src) + ":" + idx}
-                    className="relative group"
-                  >
-                    <img
-                      src={img.src}
-                      alt={img.alt || `Image ${idx + 1}`}
-                      className="w-full h-24 object-cover rounded-md border cursor-zoom-in"
-                      onClick={() => openImageDetailsAt(idx)}
-                      onError={(e) => {
-                        (e.currentTarget as HTMLImageElement).src =
-                          "/images/default.jpg";
-                      }}
-                    />
-                    {img.is_primary === true && (
-                      <span className="absolute bottom-1 left-1 text-[10px] bg-black/70 text-white px-1.5 py-0.5 rounded">
-                        Thumbnail
-                      </span>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => removeImageAt(idx)}
-                      className="absolute top-1 right-1 px-2 py-0.5 text-xs bg-red-600 text-white rounded opacity-0 group-hover:opacity-100 transition"
-                      aria-label={`Remove image ${idx + 1}`}
-                    >
-                      ✕
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="w-full h-full flex items-center justify-center border-2 border-dashed border-gray-300 rounded-lg text-gray-400">
-              No images selected
-            </div>
-          )}
+        <div className="hidden sm:flex sm:w-1/2 pr-0 sm:pr-6 h-full min-h-0 shrink-0 flex-col">
+
+{previewImages.length > 0 ? (
+  <div className="flex flex-col h-full min-h-0 space-y-3">
+    {/* Top: main preview (fixed height) */}
+    <div className="aspect-video w-full overflow-hidden rounded-lg shadow-lg h-[280px] relative shrink-0">
+      <img
+        src={previewImages[0].src}
+        alt={previewImages[0].alt || "Product Preview"}
+        className="w-full h-full object-cover cursor-zoom-in"
+        onClick={() => openImageDetailsAt(0)}
+        onError={(e) => {
+          (e.currentTarget as HTMLImageElement).src = "/images/default.jpg";
+        }}
+      />
+      {previewImages[0].is_primary === true && (
+        <span className="absolute top-2 left-2 text-xs bg-[#8B1C1C] text-white px-2 py-1 rounded">
+          Thumbnail
+        </span>
+      )}
+    </div>
+
+    {/* Bottom: thumbnails (scrollable) */}
+    <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className="grid grid-cols-3 gap-3">
+        {previewImages.map((img, idx) => (
+          <div
+            key={(img.image_id ?? img.src) + ":" + idx}
+            className="relative group"
+          >
+            <img
+              src={img.src}
+              alt={img.alt || `Image ${idx + 1}`}
+              className="w-full h-24 object-cover rounded-md border cursor-zoom-in"
+              onClick={() => openImageDetailsAt(idx)}
+              onError={(e) => {
+                (e.currentTarget as HTMLImageElement).src = "/images/default.jpg";
+              }}
+            />
+            {img.is_primary === true && (
+              <span className="absolute bottom-1 left-1 text-[10px] bg-black/70 text-white px-1.5 py-0.5 rounded">
+                Thumbnail
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => removeImageAt(idx)}
+              className="absolute top-1 right-1 px-2 py-0.5 text-xs bg-red-600 text-white rounded opacity-0 group-hover:opacity-100 transition"
+              aria-label={`Remove image ${idx + 1}`}
+            >
+              ✕
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
+  </div>
+) : (
+  <div className="w-full h-full flex items-center justify-center border-2 border-dashed border-gray-300 rounded-lg text-gray-400">
+    No images selected
+  </div>
+)}
+
           {errors.image && <p className="text-red-600 mt-2">{errors.image}</p>}
           <p className="text-xs text-gray-500 mt-2">
             You can upload up to {MAX_IMAGES} images.
@@ -1862,38 +1921,7 @@ const Modal = ({
                   </p>
                 )}
 
-                <div
-                  className={`sm:col-span-2 ${
-                    errors.longDescription
-                      ? "ring-1 ring-red-600 rounded-md"
-                      : ""
-                  }`}
-                >
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    Long Description
-                  </label>
-                  <ReactQuill
-                    theme="snow"
-                    value={formData.longDescription}
-                    onChange={(content) =>
-                      setFormData((prev: any) => ({
-                        ...prev,
-                        longDescription: content,
-                      }))
-                    }
-                    modules={quillModulesLong}
-                    formats={quillFormats}
-                    placeholder="Detailed specs, care instructions, materials, FAQs…"
-                    className="h-100 mb-10"
-                  />
-                </div>
-                {errors.longDescription && (
-                  <p className="text-red-600 sm:col-span-2">
-                    {errors.longDescription}
-                  </p>
-                )}
-
-                {!isEditMode ? (
+              {!isEditMode ? (
                   <>
                     <div className="relative">
                       <select
@@ -2290,6 +2318,112 @@ const Modal = ({
                 />
               </div>
             </section>
+            {/* Product Card */}
+<section>
+  <h3 className="text-lg sm:text-xl font-semibold mb-3 sm:mb-4 border-b border-gray-200 pb-2 text-[#8B1C1C]">
+    Product Card
+  </h3>
+
+  {/* Long Description moved here */}
+
+  {/* Card 1 */}
+  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6 mb-2  mt-7">
+    <div className="sm:col-span-2">
+      <label className="block text-sm font-medium text-gray-700 mb-1 mt-7">Card 1 Title</label>
+      <input
+        name="card1Title"
+        type="text"
+        placeholder="Card 1 Title"
+        className="input-primary"
+        value={formData.card1Title}
+        onChange={(e) =>
+          setFormData((prev: any) => ({ ...prev, card1Title: e.target.value }))
+        }
+      />
+    </div>
+    <div className="sm:col-span-2">
+      <label className="block text-sm font-medium text-gray-700 mb-1">Card 1</label>
+      <ReactQuill
+        theme="snow"
+        value={formData.card1}
+        onChange={(content) =>
+          setFormData((prev: any) => ({ ...prev, card1: content }))
+        }
+        modules={quillModules}
+        formats={quillFormats}
+        placeholder="Write Card 1 content…"
+        className="h-50 mb-10"
+      />
+    </div>
+  </div>
+
+  {/* Card 2 */}
+<div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6 mb-2 mt-7">
+  <div className="sm:col-span-2">
+    <label className="block text-sm font-medium text-gray-700 mb-1 mt-1">
+      Card 2 Title
+    </label>
+    <input
+      name="card2Title"
+      type="text"
+      placeholder="Card 2 Title"
+      className="input-primary"
+      value={formData.card2Title}
+      onChange={(e) =>
+        setFormData((prev: any) => ({ ...prev, card2Title: e.target.value }))
+      }
+    />
+  </div>
+  <div className="sm:col-span-2">
+    <label className="block text-sm font-medium text-gray-700 mb-1">
+      Card 2
+    </label>
+    <ReactQuill
+      theme="snow"
+      value={formData.card2}
+      onChange={(content) =>
+        setFormData((prev: any) => ({ ...prev, card2: content }))
+      }
+      modules={quillModulesLong}
+      formats={quillFormats}
+      placeholder="Detailed specs, care instructions, materials, FAQs…"
+      className="h-100 mb-10"
+    />
+  </div>
+</div>
+
+
+  {/* Card 3 */}
+  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6">
+    <div className="sm:col-span-2">
+      <label className="block text-sm font-medium text-gray-700 mb-1 mt-7">Card 3 Title</label>
+      <input
+        name="card3Title"
+        type="text"
+        placeholder="Card 3 Title"
+        className="input-primary"
+        value={formData.card3Title}
+        onChange={(e) =>
+          setFormData((prev: any) => ({ ...prev, card3Title: e.target.value }))
+        }
+      />
+    </div>
+    <div className="sm:col-span-2">
+      <label className="block text-sm font-medium text-gray-700 mb-1">Card 3</label>
+      <ReactQuill
+        theme="snow"
+        value={formData.card3}
+        onChange={(content) =>
+          setFormData((prev: any) => ({ ...prev, card3: content }))
+        }
+        modules={quillModules}
+        formats={quillFormats}
+        placeholder="Write Card 3 content…"
+        className="h-50 mb-10"
+      />
+    </div>
+  </div>
+</section>
 
             {/* Product Variations */}
             <section>
