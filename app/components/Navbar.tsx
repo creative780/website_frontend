@@ -5,7 +5,6 @@ import React, {
   useState,
   useEffect,
   useRef,
-  useLayoutEffect,
   useCallback,
   useId,
 } from "react";
@@ -98,21 +97,6 @@ const writeNavCache = (data: Category[]) => {
 const NOT_FOUND_IMG = "/images/img1.jpg";
 
 /* ──────────────────────────────────────────────────────────
-   RAF throttle helper
-   ────────────────────────────────────────────────────────── */
-const useRafThrottle = (fn: () => void) => {
-  const ticking = useRef(false);
-  return useCallback(() => {
-    if (ticking.current) return;
-    ticking.current = true;
-    requestAnimationFrame(() => {
-      fn();
-      ticking.current = false;
-    });
-  }, [fn]);
-};
-
-/* ──────────────────────────────────────────────────────────
    Component
    ────────────────────────────────────────────────────────── */
 export default function Navbar() {
@@ -126,7 +110,8 @@ export default function Navbar() {
   const [fetchError, setFetchError] = useState<string | null>(null);
 
   // remember last hovered subcategory until user hovers another
-  const [hoveredSubForProducts, setHoveredSubForProducts] = useState<string | null>(null);
+  const [hoveredSubForProducts, setHoveredSubForProducts] =
+    useState<string | null>(null);
 
   const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -140,98 +125,40 @@ export default function Navbar() {
     const rect = el.getBoundingClientRect();
     setDropdownTop(Math.max(8, Math.round(rect.bottom + 8)));
   }, []);
-  const rafRecomputeDropdownTop = useRafThrottle(recomputeDropdownTop);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    rafRecomputeDropdownTop();
-    const ro = new ResizeObserver(rafRecomputeDropdownTop);
-    if (navRef.current) ro.observe(navRef.current);
+    // Recompute on mount and on scroll/resize
+    const onScroll = () => recomputeDropdownTop();
+    const onResize = () => recomputeDropdownTop();
 
-    const onScroll = rafRecomputeDropdownTop;
-    const onResize = rafRecomputeDropdownTop;
-
+    recomputeDropdownTop();
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", onResize);
 
     return () => {
-      ro.disconnect();
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("resize", onResize);
     };
-  }, [rafRecomputeDropdownTop]);
+  }, [recomputeDropdownTop]);
 
-  // ===== Category bar sizing (single row; centered on lg+) =====
+  // ===== Horizontal rail: left-aligned, scrollable, no page scroll =====
   const barContainerRef = useRef<HTMLDivElement>(null);
-  const barInnerRef = useRef<HTMLDivElement>(null);
-  const [fs, setFs] = useState<number>(16);
-  const [gap, setGap] = useState<number>(10);
-  const [scale, setScale] = useState<number>(1);
-  const [isLg, setIsLg] = useState(false);
 
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const mql = window.matchMedia("(min-width:1024px)");
-    const update = () => setIsLg(mql.matches);
-    update();
-    mql.addEventListener("change", update);
-    return () => mql.removeEventListener("change", update);
+  const handleWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
+    const el = barContainerRef.current;
+    if (!el) return;
+
+    const canScroll = el.scrollWidth > el.clientWidth;
+    if (!canScroll) return; // let page handle it naturally
+
+    // If there's vertical wheel input, convert it to horizontal scroll
+    const deltaX = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
+    if (deltaX !== 0) {
+      e.preventDefault(); // stop the page from scrolling
+      el.scrollLeft += deltaX;
+    }
   }, []);
-
-  const MIN_FONT = 12;
-  const MAX_FONT = 16;
-  const MIN_GAP = 2;
-  const MAX_GAP = 10;
-
-  const fitBar = useCallback(() => {
-    if (!isLg) {
-      setFs(14);
-      setGap(8);
-      setScale(1);
-      return;
-    }
-    const container = barContainerRef.current;
-    const inner = barInnerRef.current;
-    if (!container || !inner) return;
-
-    inner.style.transform = "scale(1)";
-    inner.style.transformOrigin = "center center";
-
-    const W = container.clientWidth || 0;
-    const content = inner.scrollWidth || 0;
-
-    if (W <= 0 || content <= 0) {
-      setFs(MAX_FONT);
-      setGap(MAX_GAP);
-      setScale(1);
-      return;
-    }
-
-    const ratio = Math.min(1, W / content);
-    const newFs = Math.max(MIN_FONT, Math.floor(MAX_FONT * (ratio * 0.98)));
-    const newGap = Math.max(MIN_GAP, Math.floor(MAX_GAP * ratio));
-    setFs(newFs);
-    setGap(newGap);
-
-    requestAnimationFrame(() => {
-      const W2 = barContainerRef.current?.clientWidth || 0;
-      const content2 = barInnerRef.current?.scrollWidth || 0;
-      const finalScale = content2 > 0 ? Math.max(0.85, Math.min(1, W2 / content2)) : 1;
-      setScale(finalScale);
-    });
-  }, [isLg]);
-  const rafFitBar = useRafThrottle(fitBar);
-
-  useLayoutEffect(() => {
-    rafFitBar();
-  }, [rafFitBar, navItemsData.length, isLg]);
-
-  useEffect(() => {
-    if (!barContainerRef.current) return;
-    const r = new ResizeObserver(rafFitBar);
-    r.observe(barContainerRef.current);
-    return () => r.disconnect();
-  }, [rafFitBar]);
 
   // ===== Data fetch with session cache =====
   useEffect(() => {
@@ -298,9 +225,8 @@ export default function Navbar() {
     return () => controller.abort();
   }, []);
 
-  // ===== Unified scroll lock with STABLE dependency length =====
+  // ===== Unified scroll lock =====
   const lockScroll = mobileOpen || (dropdownVisible && openIndex !== null);
-
   useEffect(() => {
     if (typeof document === "undefined") return;
     if (lockScroll) {
@@ -314,7 +240,7 @@ export default function Navbar() {
       document.body.style.overflow = "";
       (document.body.style as any).overscrollBehavior = "";
     };
-  }, [lockScroll]); // <— single, stable dependency
+  }, [lockScroll]);
 
   // reset right pane when switching category
   useEffect(() => {
@@ -328,12 +254,12 @@ export default function Navbar() {
   const handleNavEnter = useCallback(
     (idx: number) => {
       if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
-      rafRecomputeDropdownTop();
+      recomputeDropdownTop();
       setOpenIndex(idx);
       setDropdownVisible(true);
-      requestAnimationFrame(rafRecomputeDropdownTop);
+      requestAnimationFrame(recomputeDropdownTop);
     },
-    [rafRecomputeDropdownTop]
+    [recomputeDropdownTop]
   );
 
   const delayedClose = useCallback(() => {
@@ -362,7 +288,6 @@ export default function Navbar() {
     delayedClose();
   }, [delayedClose]);
 
-  // Keyboard: open with Enter/Space/ArrowDown; close with Escape; cycle with ArrowLeft/Right
   const onTopItemKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLAnchorElement>, idx: number) => {
       const total = navItemsData.length;
@@ -448,24 +373,29 @@ export default function Navbar() {
       >
         <div className="w-full px-2 mx-auto">
           <div className="relative">
-            {/* Single row links; centered on lg+, scrollable below lg */}
+            {/* Single row links; left-aligned, horizontally scrollable on all breakpoints */}
             <div className={`${mobileOpen ? "flex flex-col py-2 space-y-1" : "hidden"} md:flex w-full`}>
               <div
                 ref={barContainerRef}
-                className="w-full overflow-x-auto lg:overflow-visible overscroll-x-contain snap-x snap-mandatory
-                           [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+                // Key bits:
+                // - overflow-x-auto, overflow-y-hidden: only horizontal scroll
+                // - touch-action pan-x: touch scrolls horizontally
+                // - overscroll-behavior-x: contain so page doesn't yank
+                // - custom onWheel to translate vertical wheel to horizontal and prevent page scroll
+                className="w-full overflow-x-auto overflow-y-hidden overscroll-x-contain snap-x snap-mandatory
+                           [touch-action:pan-x] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
                 aria-label="Product categories"
+                onWheel={handleWheel}
               >
-                <div className="flex lg:justify-center w-full">
+                {/* no lg:justify-center — keep left-aligned */}
+                <div className="flex w-full">
                   <div
-                    ref={barInnerRef}
-                    className="flex flex-nowrap w-max select-none whitespace-nowrap origin-center motion-safe:transition-transform lg:w-fit"
+                    className="flex flex-nowrap w-max select-none whitespace-nowrap"
                     style={{
-                      gap,
-                      fontSize: `${fs}px`,
+                      // fixed, non-oscillating typography
+                      gap: 12,
+                      fontSize: 16,
                       lineHeight: 1.25,
-                      transform: `scale(${scale})`,
-                      transformOrigin: "center center",
                       letterSpacing: "0.2px",
                     }}
                     role="menubar"
@@ -479,40 +409,14 @@ export default function Navbar() {
                       >
                         <Link
                           href={item.url || "#"}
-                          className={`block text-center whitespace-nowrap overflow-ellipsis motion-safe:transition-colors ${
+                          className={`block text-center whitespace-nowrap overflow-ellipsis transition-colors ${
                             openIndex === idx ? "text-red-600" : "text-gray-800 hover:text-red-600"
-                          } font-medium px-2 py-2 lg:px-3`}
-                          style={{ fontSize: "inherit" }}
+                          } font-medium px-3 py-2`}
                           aria-haspopup="menu"
                           aria-expanded={openIndex === idx && dropdownVisible ? true : false}
                           aria-controls={dropdownId}
                           role="menuitem"
-                          onKeyDown={(e) => {
-                            const total = navItemsData.length;
-                            if (!total) return;
-                            switch (e.key) {
-                              case "Enter":
-                              case " ":
-                              case "ArrowDown":
-                                e.preventDefault();
-                                handleNavEnter(idx);
-                                break;
-                              case "Escape":
-                                e.preventDefault();
-                                delayedClose();
-                                break;
-                              case "ArrowRight":
-                                e.preventDefault();
-                                handleNavEnter((idx + 1) % total);
-                                break;
-                              case "ArrowLeft":
-                                e.preventDefault();
-                                handleNavEnter((idx - 1 + total) % total);
-                                break;
-                              default:
-                                break;
-                            }
-                          }}
+                          onKeyDown={(e) => onTopItemKeyDown(e, idx)}
                           onFocus={() => handleNavEnter(idx)}
                           onClick={() => setMobileOpen(false)}
                         >
@@ -542,7 +446,7 @@ export default function Navbar() {
                 setIsDropdownHovered(false);
                 delayedClose();
               }}
-              className={`hidden md:block fixed z-50 mx-auto px-2 motion-safe:transition-all duration-150 ease-out ${
+              className={`hidden md:block fixed z-50 mx-auto px-2 transition-all duration-150 ease-out ${
                 dropdownVisible ? "opacity-100 scale-100" : "opacity-0 scale-95 pointer-events-none"
               }`}
               style={{ top: `${dropdownTop}px`, left: "20px", right: "20px" }}

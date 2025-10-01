@@ -32,8 +32,6 @@ const team = [
   { name: 'Rizwan Malik', title: 'Production Head / Art Director', image: '/images/rizwan.png' },
   { name: 'Tahir Latif', title: 'Branch Manager', image: '/images/tahir.png' },
   { name: 'Mansoor Alam', title: 'Production Department', image: '/images/mansoor.png' },
-  { name: 'Husnain Shafique', title: 'PK Branch Manager', image: '/images/hussnain.png' },
-  { name: 'Akrash Noman', title: 'Full Stack Web Developer', image: '/images/akrash.png' },
 ];
 
 const logos = [

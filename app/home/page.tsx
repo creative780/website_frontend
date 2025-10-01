@@ -25,8 +25,9 @@ import {
 import Toastify from "toastify-js";
 import { API_BASE_URL } from "../utils/api";
 import { ChatBot } from "../components/ChatBot";
-// USE SafeImage (next/image wrapper) for the hero so Next generates srcset automatically
-import SafeImage, { SafeImg } from "../components/SafeImage";
+// NOTE: Temporarily bypass SafeImage/next-image for hero to isolate the issue
+// import SafeImage, { SafeImg } from "../components/SafeImage";
+import { SafeImg } from "../components/SafeImage";
 import dynamic from "next/dynamic";
 
 // ───────────────────────────────────────────────────────────────────────────────
@@ -74,6 +75,42 @@ export default function PrintingServicePage() {
   const fallbackImage =
     "https://storage.googleapis.com/tagjs-prod.appspot.com/v1/ZfQW3qI2ok/ymeg8jht_expires_30_days.png";
 
+  // Robust absolute-URL resolver that does not rely on next/image
+  const toHttpsAbsUrl = (u: string): string => {
+    try {
+      if (!u) return fallbackImage;
+
+      // Absolute URL
+      if (/^https?:\/\//i.test(u)) {
+        const url = new URL(u);
+        if (url.protocol === "http:") url.protocol = "https:";
+        return url.toString();
+      }
+
+      // Base from API_BASE_URL (can be empty in some misconfigs)
+      const base = (API_BASE_URL || "").replace(/\/+$/, "");
+      // Root-relative path
+      if (u.startsWith("/")) {
+        if (!base) return u; // same-origin relative; still fine
+        const url = new URL(u, base);
+        if (url.protocol === "http:") url.protocol = "https:";
+        return url.toString();
+      }
+
+      // Path-like (e.g., "media/hero.jpg")
+      if (base) {
+        const url = new URL(`/${u.replace(/^\/+/, "")}`, base);
+        if (url.protocol === "http:") url.protocol = "https:";
+        return url.toString();
+      }
+
+      // Last resort: make it root-relative
+      return `/${u.replace(/^\/+/, "")}`;
+    } catch {
+      return fallbackImage;
+    }
+  };
+
   const [desktopImages, setDesktopImages] = useState<string[]>([fallbackImage]);
   const [mobileImages, setMobileImages] = useState<string[]>([fallbackImage]);
   const [desktopIndex, setDesktopIndex] = useState(0);
@@ -112,28 +149,42 @@ export default function PrintingServicePage() {
       )
       .then((data) => {
         const all: any[] = data?.images || [];
+
         const desktop = all
           .filter((img) => img.device_type === "desktop")
-          .map((img) => img.url);
+          .map((img) => toHttpsAbsUrl(img.url));
         const mobile = all
           .filter((img) => img.device_type === "mobile")
-          .map((img) => img.url);
+          .map((img) => toHttpsAbsUrl(img.url));
+
         const mid = Math.ceil(all.length / 2);
 
-        setDesktopImages(
+        const desktopResolved =
           desktop.length
             ? desktop
-            : all.slice(0, mid).map((img) => img.url) || [fallbackImage]
-        );
-        setMobileImages(
+            : all.slice(0, mid).map((img) => toHttpsAbsUrl(img.url)) || [fallbackImage];
+
+        const mobileResolved =
           mobile.length
             ? mobile
-            : all.slice(mid).map((img) => img.url) || [fallbackImage]
-        );
+            : all.slice(mid).map((img) => toHttpsAbsUrl(img.url)) || [fallbackImage];
+
+        // quick debug to verify computed URLs in prod
+        try {
+          // eslint-disable-next-line no-console
+          console.log("[hero] desktop", desktopResolved, "[hero] mobile", mobileResolved);
+        } catch {}
+
+        setDesktopImages(desktopResolved);
+        setMobileImages(mobileResolved);
         setDesktopIndex(0);
         setMobileIndex(0);
       })
-      .catch(() => {
+      .catch((err) => {
+        try {
+          // eslint-disable-next-line no-console
+          console.warn("[hero] fetch failed", err);
+        } catch {}
         setDesktopImages([fallbackImage]);
         setMobileImages([fallbackImage]);
         setDesktopIndex(0);
@@ -315,6 +366,39 @@ export default function PrintingServicePage() {
   const desktopHeroSrc = getAt(desktopImages, desktopIndex, FALLBACK_HERO_DESKTOP);
   const mobileHeroSrc = getAt(mobileImages, mobileIndex, FALLBACK_HERO_MOBILE);
 
+  // Simple native <img> banner (bypasses next/image/SafeImage quirks)
+  const ImgHero = ({
+    src,
+    alt,
+    width,
+    height,
+    className,
+  }: {
+    src: string;
+    alt: string;
+    width: number;
+    height: number;
+    className?: string;
+  }) => (
+    <img
+      alt={alt}
+      src={src}
+      width={width}
+      height={height}
+      className={className}
+      loading="eager"
+      decoding="async"
+      style={{ maxWidth: "100%", height: "auto" }}
+      onError={(e) => {
+        // eslint-disable-next-line no-console
+        try {
+          console.warn("[hero] image error for", src);
+        } catch {}
+        (e.currentTarget as HTMLImageElement).src = FALLBACK_HERO_DESKTOP;
+      }}
+    />
+  );
+
   return (
     <>
       {/* SEO + Social + Discoverability */}
@@ -346,9 +430,12 @@ export default function PrintingServicePage() {
         />
         <meta name="twitter:image" content="/images/Banner3.jpg" />
         {/* Preconnects */}
-        <link rel="preconnect" href={API_BASE_URL} />
-        <link rel="dns-prefetch" href={API_BASE_URL} />
-        {/* No imagesrcset here. Next/Image with priority will emit proper preloads. */}
+        {API_BASE_URL ? (
+          <>
+            <link rel="preconnect" href={API_BASE_URL} />
+            <link rel="dns-prefetch" href={API_BASE_URL} />
+          </>
+        ) : null}
       </Head>
 
       <main
@@ -370,33 +457,26 @@ export default function PrintingServicePage() {
           Creative Connect — Printing &amp; Design Services in Dubai
         </h1>
 
-        {/* HERO — use SafeImage (next/image) so Next generates srcset; give sizes for correct pick */}
-        <section aria-label="Hero banners">
+        {/* HERO — TEMP: native <img> to guarantee render in prod */}
+        <section aria-label="Hero banners" className="w-full">
           {/* Desktop */}
           <div className="hidden sm:block">
-            <SafeImage
+            <ImgHero
               alt="Featured promotions and services for desktop visitors"
               src={desktopHeroSrc}
               width={1440}
               height={400}
-              priority
-              fetchPriority="high"
-              sizes="(max-width: 1024px) 100vw, 1440px"
               className="w-full h-auto mx-auto"
-              // optional: quality={80}
             />
           </div>
 
           {/* Mobile */}
           <div className="block sm:hidden">
-            <SafeImage
+            <ImgHero
               alt="Featured promotions and services for mobile visitors"
               src={mobileHeroSrc}
               width={768}
               height={300}
-              priority
-              fetchPriority="high"
-              sizes="100vw"
               className="w-full h-auto object-cover mx-auto"
             />
           </div>
@@ -407,7 +487,7 @@ export default function PrintingServicePage() {
           <Carousel />
         </section>
 
-        {/* The rest can stay SafeImg if you want, but AVIF/WebP would cut bytes a lot */}
+        {/* Banners below can keep SafeImg */}
         <SafeImg
           height="250"
           sizes="100vw"

@@ -85,9 +85,37 @@ const sanitizeHtml = (dirty: string) =>
 
 /** ==== Page (Client) ==== */
 const CategoryPage: React.FC<Props> = ({ params }) => {
-  /** ==== Resolve params Promise into a usable slug ==== */
+  /** ========================== HOOKS (UNCONDITIONAL) ========================== */
+  // 1) Resolve params Promise into a usable slug
   const [categorySlug, setCategorySlug] = useState<string | undefined>(undefined);
 
+  // 2) Data state
+  const [categoryInfo, setCategoryInfo] = useState<Category | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  // 3) Hero images state
+  const [heroImages, setHeroImages] = useState<HeroImage[]>([]);
+  const [desktopImages, setDesktopImages] = useState<string[]>(['/images/img1.jpg']);
+  const [mobileImages, setMobileImages] = useState<string[]>(['/images/img1.jpg']);
+  const [desktopIndex, setDesktopIndex] = useState(0);
+  const [mobileIndex, setMobileIndex] = useState(0);
+
+  // 4) Prefetch control
+  const hasPrefetchedHeroRef = useRef(false);
+
+  // 5) Derived
+  const currentDesktopHero = desktopImages[desktopIndex];
+
+  const categoryText = useMemo(
+    () =>
+      categorySlug
+        ?.split('-')
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+        .join(' ') || '',
+    [categorySlug]
+  );
+
+  // 6) Resolve slug from params
   useEffect(() => {
     let mounted = true;
     params
@@ -102,56 +130,25 @@ const CategoryPage: React.FC<Props> = ({ params }) => {
     };
   }, [params]);
 
-  /** Early skeleton while slug resolves (prevents undefined access downstream) */
-  if (!categorySlug) {
-    return (
-      <div className="bg-white overflow-x-hidden" style={{ fontFamily: 'var(--font-poppins), Arial, sans-serif' }}>
-        <Head>
-          <title>Categories</title>
-          <meta name="description" content="Explore our product range." />
-        </Head>
-        <a
-          href="#main"
-          className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-white focus:text-black focus:px-3 focus:py-2 focus:rounded"
-        >
-          Skip to main content
-        </a>
-        <div aria-hidden className="w-full bg-gray-100 animate-pulse" style={{ height: 'clamp(300px, 35vw, 420px)' }} />
-      </div>
-    );
-  }
-
-  /** ==== State ==== */
-  const [categoryInfo, setCategoryInfo] = useState<Category | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  const [heroImages, setHeroImages] = useState<HeroImage[]>([]);
-  const [desktopImages, setDesktopImages] = useState<string[]>(['/images/img1.jpg']);
-  const [mobileImages, setMobileImages] = useState<string[]>(['/images/img1.jpg']);
-  const [desktopIndex, setDesktopIndex] = useState(0);
-  const [mobileIndex, setMobileIndex] = useState(0);
-
-  /** Track current desktop hero for <link preload> */
-  const currentDesktopHero = desktopImages[desktopIndex];
-  const hasPrefetchedHeroRef = useRef(false);
-
-  /** ==== Derived values ==== */
-  const categoryText = useMemo(
-    () =>
-      categorySlug
-        ?.split('-')
-        .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-        .join(' ') || '',
-    [categorySlug]
-  );
-
-  /** ==== Data fetching (parallel + abort-safe) ==== */
+  // 7) Data fetching (guarded by slug, abort-safe)
   useEffect(() => {
     let canceled = false;
     const ctrl = new AbortController();
 
+    // If slug not ready, show skeleton and bail early from effect body
+    if (!categorySlug) {
+      setLoading(true);
+      setCategoryInfo(null);
+      return () => {
+        canceled = true;
+        ctrl.abort();
+      };
+    }
+
     const fetchCategoryData = async () => {
       try {
+        setLoading(true);
+
         const navPromise = fetchWithKey(`${API_BASE_URL}/api/show_nav_items/`, { signal: ctrl.signal });
         const heroPromise = fetchWithKey(`${API_BASE_URL}/api/hero-banner/`, { signal: ctrl.signal });
         const catsPromise = fetchWithKey(`${API_BASE_URL}/api/show-categories/`, { signal: ctrl.signal });
@@ -222,7 +219,7 @@ const CategoryPage: React.FC<Props> = ({ params }) => {
     };
   }, [categorySlug]);
 
-  /** ==== Motion-safe, memory-safe auto-advance for hero images ==== */
+  // 8) Motion-safe, memory-safe auto-advance for hero images
   useEffect(() => {
     const prefersReducedMotion =
       typeof window !== 'undefined' &&
@@ -239,7 +236,7 @@ const CategoryPage: React.FC<Props> = ({ params }) => {
     return () => clearInterval(interval);
   }, [heroImages.length, desktopImages.length, mobileImages.length]);
 
-  /** ==== Preload current desktop hero (helps LCP) ==== */
+  // 9) Preload current desktop hero (helps LCP)
   useEffect(() => {
     if (!currentDesktopHero || hasPrefetchedHeroRef.current) return;
     const link = document.createElement('link');
@@ -251,7 +248,7 @@ const CategoryPage: React.FC<Props> = ({ params }) => {
     // keep link in head for session; don’t remove
   }, [currentDesktopHero]);
 
-  /** ==== SEO meta (Head, not DOM mutation) ==== */
+  /** ========================== DERIVED SEO BITS (SAFE ANYTIME) ========================== */
   const metaDescription =
     (categoryInfo?.caption || categoryInfo?.description || 'Explore our product range.')
       ?.toString()
@@ -289,7 +286,29 @@ const CategoryPage: React.FC<Props> = ({ params }) => {
     ],
   };
 
-  /** ==== Loading state (minimal CLS) ==== */
+  /** ========================== UI BRANCHES (AFTER ALL HOOKS) ========================== */
+
+  /** Early skeleton while slug resolves (prevents undefined access downstream) */
+  if (!categorySlug) {
+    return (
+      <div className="bg-white overflow-x-hidden" style={{ fontFamily: 'var(--font-poppins), Arial, sans-serif' }}>
+        <Head>
+          <title>Categories</title>
+          <meta name="description" content="Explore our product range." />
+          <link rel="canonical" href={canonicalHref} />
+        </Head>
+        <a
+          href="#main"
+          className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:bg-white focus:text-black focus:px-3 focus:py-2 focus:rounded"
+        >
+          Skip to main content
+        </a>
+        <div aria-hidden className="w-full bg-gray-100 animate-pulse" style={{ height: 'clamp(300px, 35vw, 420px)' }} />
+      </div>
+    );
+  }
+
+  /** Loading state (minimal CLS) */
   if (loading) {
     return (
       <div className="bg-white overflow-x-hidden" style={{ fontFamily: 'var(--font-poppins), Arial, sans-serif' }}>
@@ -312,7 +331,7 @@ const CategoryPage: React.FC<Props> = ({ params }) => {
     );
   }
 
-  /** ==== 404 (no category) ==== */
+  /** 404 (no category) */
   if (!categoryInfo) {
     return (
       <div
@@ -399,6 +418,7 @@ const CategoryPage: React.FC<Props> = ({ params }) => {
     );
   }
 
+  /** ==== Success UI ==== */
   const rawDescription = (categoryInfo.description || '').trim();
   const descriptionHtml = sanitizeHtml(rawDescription) || '<p>Explore our product range.</p>';
   const categoryImage = categoryInfo.images?.[0]?.url || '/images/img1.jpg';
