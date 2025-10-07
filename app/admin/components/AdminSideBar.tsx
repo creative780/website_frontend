@@ -96,6 +96,7 @@ const ALL_LINKS: LinkItem[] = [
     ],
   },
   { label: "Media Library", href: "/admin/media-library" },
+  { label: "Event Call Back", href: "/admin/event-callback" },
   { label: "Settings", href: "/admin/settings" },
   { label: "Google Analytics", href: "/admin/G-Analytics" },
   { label: "Google Settings", href: "/admin/G-Settings" },

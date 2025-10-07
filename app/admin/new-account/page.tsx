@@ -51,6 +51,7 @@ const sidebarLinks = [
   'Navbar',
   'Attributes',
   'User View',
+  "Event Call Back",
 ] as const;
 
 const rolePermissionsMap: { [role: string]: string[] } = {
@@ -72,6 +73,7 @@ const rolePermissionsMap: { [role: string]: string[] } = {
     'Manage Categories',
     'Attributes',
     'User View',
+    "Event Call Back",
   ],
   'Marketing Manager': [
     'Blog',
@@ -81,6 +83,7 @@ const rolePermissionsMap: { [role: string]: string[] } = {
     'Hero Banner',
     'Navbar',
     'User View',
+    "Event Call Back",
   ],
   'Content Editor': [
     'Media Library',
@@ -91,7 +94,7 @@ const rolePermissionsMap: { [role: string]: string[] } = {
     'Navbar',
     'User View',
   ],
-  'Customer Support': ['Orders', 'Notifications', 'Testimonials', 'User View'],
+  'Customer Support': ['Orders', 'Notifications', 'Testimonials', 'User View', "Event Call Back",],
   Developer: [...sidebarLinks],
   Analyst: ['Dashboard', 'Google Analytics', 'Google Settings', 'User View'],
   'Custom Role': [],

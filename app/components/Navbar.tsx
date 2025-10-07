@@ -510,7 +510,7 @@ export default function Navbar() {
                                 onClick={() => setMobileOpen(false)}
                               >
                                 <figure
-                                  className="rounded-md overflow-hidden flex items-center justify-center bg-gray-50"
+                                  className="rounded-md overflow-hidden flex items-center justify-center bg-none"
                                   style={{ width: 120, height: 120 }}
                                 >
                                   <SafeImg
@@ -559,7 +559,7 @@ export default function Navbar() {
                               onClick={() => setMobileOpen(false)}
                             >
                               <figure
-                                className="rounded-md overflow-hidden flex items-center justify-center bg-gray-50"
+                                className="rounded-md overflow-hidden flex items-center justify-center bg-none"
                                 style={{ width: 120, height: 120 }}
                               >
                                 <SafeImg

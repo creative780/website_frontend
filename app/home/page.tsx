@@ -5,7 +5,6 @@ import React, {
   useEffect,
   useMemo,
   useRef,
-  useCallback,
   useId,
 } from "react";
 import "toastify-js/src/toastify.css";
@@ -25,18 +24,35 @@ import {
 import Toastify from "toastify-js";
 import { API_BASE_URL } from "../utils/api";
 import { ChatBot } from "../components/ChatBot";
-// NOTE: Temporarily bypass SafeImage/next-image for hero to isolate the issue
-// import SafeImage, { SafeImg } from "../components/SafeImage";
 import { SafeImg } from "../components/SafeImage";
 import dynamic from "next/dynamic";
 
 // ───────────────────────────────────────────────────────────────────────────────
-// Frontend key helper (kept local; not exported)
+// URL joiner → kills accidental double slashes and lets you control trailing slash
+const joinUrl = (...parts: string[]) =>
+  parts
+    .filter(Boolean)
+    .map((p, i) => (i === 0 ? p.replace(/\/+$/,"") : p.replace(/^\/+|\/+$/g,"")))
+    .join("/");
+
+// Add trailing slash when you actually want one (DRF convention)
+const withTrailingSlash = (u: string) => (u.endsWith("/") ? u : u + "/");
+
+// Frontend key helper
 const FRONTEND_KEY = (process.env.NEXT_PUBLIC_FRONTEND_KEY || "").trim();
 const withFrontendKey = (init: RequestInit = {}): RequestInit => {
   const headers = new Headers(init.headers || {});
   if (FRONTEND_KEY) headers.set("X-Frontend-Key", FRONTEND_KEY);
   return { ...init, headers };
+};
+
+// Normalize <input type="datetime-local"> value to include seconds (HH:MM → HH:MM:00)
+const normalizeDateTimeLocal = (s: string) => {
+  if (!s) return s;
+  const trimmed = s.trim();
+  // "YYYY-MM-DDTHH:MM" → length 16, index 10 is "T"
+  if (trimmed.length === 16 && trimmed[10] === "T") return trimmed + ":00";
+  return trimmed;
 };
 
 // Local utility: slugify (stable)
@@ -49,6 +65,20 @@ function slugify(value: string, allowUnicode = false): string {
   return v.replace(/[-\s]+/g, "-").replace(/^[-_]+|[-_]+$/g, "");
 }
 
+// Device UUID (persist per browser)
+function getDeviceUUID(): string {
+  if (typeof window === "undefined") return "server";
+  const KEY = "__cc_device_uuid__";
+  let v = window.localStorage.getItem(KEY);
+  if (!v) {
+    v =
+      (globalThis.crypto as any)?.randomUUID?.() ||
+      `${Date.now()}-${Math.random()}`.replace(".", "");
+    window.localStorage.setItem(KEY, v);
+  }
+  return v;
+}
+
 // Heavy sections → Next dynamic (keeps TTI lower)
 const Carousel = dynamic(() => import("../components/Carousel"), {
   loading: () => <div aria-hidden="true" />,
@@ -56,11 +86,11 @@ const Carousel = dynamic(() => import("../components/Carousel"), {
 const Reviews = dynamic(() => import("../components/reviews"), {
   loading: () => <div aria-hidden="true" />,
 });
-const SecondCarousel = dynamic(
-  () => import("../components/second_carousel"),
-  { loading: () => <div aria-hidden="true" /> }
-);
+const SecondCarousel = dynamic(() => import("../components/second_carousel"), {
+  loading: () => <div aria-hidden="true" />,
+});
 
+// Types
 type Category = {
   id: number | string;
   name: string;
@@ -68,9 +98,24 @@ type Category = {
   status?: string;
 };
 
+type CallbackDraft = {
+  full_name: string;
+  email?: string;
+  phone: string;
+  event_type: string;           // text input now
+  preferred_callback: string;   // ISO (datetime-local string)
+  // expanded fields:
+  event_venue?: string;
+  event_datetime?: string;
+  estimated_guests?: string;
+  budget?: string;
+  theme?: string;
+  notes?: string;
+};
+
 export default function PrintingServicePage() {
   const FALLBACK_HERO_DESKTOP = "/images/Banner3.jpg";
-  const FALLBACK_HERO_MOBILE = "/images/Banner3.jpg";
+  const FALLBACK_HERO_MOBILE  = "/images/Banner3.jpg";
 
   const fallbackImage =
     "https://storage.googleapis.com/tagjs-prod.appspot.com/v1/ZfQW3qI2ok/ymeg8jht_expires_30_days.png";
@@ -91,7 +136,7 @@ export default function PrintingServicePage() {
       const base = (API_BASE_URL || "").replace(/\/+$/, "");
       // Root-relative path
       if (u.startsWith("/")) {
-        if (!base) return u; // same-origin relative; still fine
+        if (!base) return u; // same-origin relative
         const url = new URL(u, base);
         if (url.protocol === "http:") url.protocol = "https:";
         return url.toString();
@@ -112,11 +157,11 @@ export default function PrintingServicePage() {
   };
 
   const [desktopImages, setDesktopImages] = useState<string[]>([fallbackImage]);
-  const [mobileImages, setMobileImages] = useState<string[]>([fallbackImage]);
-  const [desktopIndex, setDesktopIndex] = useState(0);
-  const [mobileIndex, setMobileIndex] = useState(0);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [isSubmitted, setIsSubmitted] = useState(false);
+  const [mobileImages, setMobileImages]   = useState<string[]>([fallbackImage]);
+  const [desktopIndex, setDesktopIndex]   = useState(0);
+  const [mobileIndex, setMobileIndex]     = useState(0);
+  const [categories, setCategories]       = useState<Category[]>([]);
+  const [isSubmitted, setIsSubmitted]     = useState(false);
 
   // a11y: reactively respect user motion preference changes
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
@@ -131,7 +176,12 @@ export default function PrintingServicePage() {
 
   // Abort controllers to avoid setting state on unmounted
   const heroAbortRef = useRef<AbortController | null>(null);
-  const catAbortRef = useRef<AbortController | null>(null);
+  const catAbortRef  = useRef<AbortController | null>(null);
+
+  // Prebuilt API endpoints (no // and with slashes where needed)
+  const HERO_URL  = withTrailingSlash(joinUrl(API_BASE_URL || "", "api", "hero-banner"));
+  const CATS_URL  = withTrailingSlash(joinUrl(API_BASE_URL || "", "api", "show-categories"));
+  const SAVE_URL  = withTrailingSlash(joinUrl(API_BASE_URL || "", "api", "save-callback"));
 
   // Fetch hero banners
   useEffect(() => {
@@ -139,7 +189,7 @@ export default function PrintingServicePage() {
     const ctrl = new AbortController();
     heroAbortRef.current = ctrl;
 
-    fetch(`${API_BASE_URL}/api/hero-banner/`, {
+    fetch(HERO_URL, {
       ...withFrontendKey(),
       signal: ctrl.signal,
       cache: "no-store",
@@ -169,22 +219,12 @@ export default function PrintingServicePage() {
             ? mobile
             : all.slice(mid).map((img) => toHttpsAbsUrl(img.url)) || [fallbackImage];
 
-        // quick debug to verify computed URLs in prod
-        try {
-          // eslint-disable-next-line no-console
-          console.log("[hero] desktop", desktopResolved, "[hero] mobile", mobileResolved);
-        } catch {}
-
         setDesktopImages(desktopResolved);
         setMobileImages(mobileResolved);
         setDesktopIndex(0);
         setMobileIndex(0);
       })
-      .catch((err) => {
-        try {
-          // eslint-disable-next-line no-console
-          console.warn("[hero] fetch failed", err);
-        } catch {}
+      .catch(() => {
         setDesktopImages([fallbackImage]);
         setMobileImages([fallbackImage]);
         setDesktopIndex(0);
@@ -192,7 +232,7 @@ export default function PrintingServicePage() {
       });
 
     return () => ctrl.abort();
-  }, []);
+  }, [HERO_URL]);
 
   // Fetch categories (visible only)
   useEffect(() => {
@@ -200,7 +240,7 @@ export default function PrintingServicePage() {
     const ctrl = new AbortController();
     catAbortRef.current = ctrl;
 
-    fetch(`${API_BASE_URL}/api/show-categories/`, {
+    fetch(CATS_URL, {
       ...withFrontendKey(),
       signal: ctrl.signal,
       cache: "no-store",
@@ -215,7 +255,7 @@ export default function PrintingServicePage() {
       })
       .catch(() => {});
     return () => ctrl.abort();
-  }, []);
+  }, [CATS_URL]);
 
   // rotate banners unless user prefers reduced motion; pause when tab hidden
   useEffect(() => {
@@ -276,9 +316,7 @@ export default function PrintingServicePage() {
   const contactItems = useMemo(
     () => [
       {
-        icon: (
-          <FaWhatsapp className="text-[#014C3D] text-[44px]" aria-hidden="true" />
-        ),
+        icon: <FaWhatsapp className="text-[#014C3D] text-[44px]" aria-hidden="true" />,
         title: "WhatsApp",
         value: "+971 50 279 3948",
         href: "https://wa.me/971502793948",
@@ -286,9 +324,7 @@ export default function PrintingServicePage() {
         label: "Chat on WhatsApp at +971 50 279 3948",
       },
       {
-        icon: (
-          <FaPhoneAlt className="text-[#00B7FF] text-[44px]" aria-hidden="true" />
-        ),
+        icon: <FaPhoneAlt className="text-[#00B7FF] text-[44px]" aria-hidden="true" />,
         title: "Call",
         value: "+971 54 539 6249",
         href: "tel:+971545396249",
@@ -297,10 +333,7 @@ export default function PrintingServicePage() {
       },
       {
         icon: (
-          <FaMapMarkerAlt
-            className="text-[#891F1A] text-[44px]"
-            aria-hidden="true"
-          />
+          <FaMapMarkerAlt className="text-[#891F1A] text-[44px]" aria-hidden="true" />
         ),
         title: "Find Us",
         value: "Naif – Deira – Dubai",
@@ -335,28 +368,134 @@ export default function PrintingServicePage() {
     };
   }, [categories.length]);
 
-  // ids for inputs (stable, a11y)
-  const nameId = useId();
+  // ids for a11y
+  const nameId  = useId();
   const phoneId = useId();
-  const messageId = useId();
-  const phoneHintId = useId();
+  const emailId = useId();
 
-  // Form submit (stable reference)
-  const handleSubmit = useCallback((e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setIsSubmitted(true);
+  // ───────────────────────────
+  // Event Callback Form with inline expansion
+  const [draft, setDraft] = useState<CallbackDraft>({
+    full_name: "",
+    email: "",
+    phone: "",
+    event_type: "",
+    preferred_callback: "",
+    event_venue: "",
+    event_datetime: "",
+    estimated_guests: "",
+    budget: "",
+    theme: "",
+    notes: "",
+  });
 
+  const [showMore, setShowMore] = useState(false);
+
+  // Phone validation: UAE-first, fall back to generic international
+  const isValidPhone = (v: string) => {
+    const clean = v.trim();
+    const uae = /^(?:\+971|0)(?:50|52|54|55|56|58|2|3|4|6|7|9)\d{7}$/; // 9 digits after prefix
+    const intl = /^\+?[0-9 ()\-]{7,20}$/;
+    return uae.test(clean) || intl.test(clean);
+  };
+
+  // Preferred callback must be at least 7 days before event date (if event date exists)
+  const validateSevenDaysRule = (preferredISO: string, eventISO?: string) => {
+    if (!eventISO) return true;
+    const pref = new Date(preferredISO);
+    const evt  = new Date(eventISO);
+    if (isNaN(pref.getTime()) || isNaN(evt.getTime())) return true; // don't block on unparsable
+    const ms7d = 7 * 24 * 60 * 60 * 1000;
+    return evt.getTime() - pref.getTime() >= ms7d;
+  };
+
+  const onChange = (
+    e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>
+  ) => {
+    const { name, value } = e.target as HTMLInputElement;
+    setDraft((d) => ({ ...d, [name]: value }));
+  };
+
+  const toast = (text: string, isError = false) =>
     Toastify({
-      text: "We'll call you back soon.",
-      duration: 3000,
+      text,
+      duration: 3500,
       gravity: "top",
       position: "right",
-      backgroundColor: "linear-gradient(to right, #00b09b, #96c93d)",
+      style: {
+        background: isError
+          ? "linear-gradient(to right, #e53935, #e35d5b)"
+          : "linear-gradient(to right, #00b09b, #96c93d)",
+      },
     }).showToast();
 
-    e.currentTarget.reset();
-    window.setTimeout(() => setIsSubmitted(false), 4000);
-  }, []);
+  const saveCallback = async () => {
+    // client validation
+    if (!draft.full_name.trim()) return toast("Full Name is required.", true);
+    if (!isValidPhone(draft.phone)) return toast("Enter a valid phone number.", true);
+    if (!draft.event_type.trim()) return toast("Enter an event type.", true);
+    if (!draft.preferred_callback) return toast("Select preferred call-back date & time.", true);
+    if (!validateSevenDaysRule(draft.preferred_callback, draft.event_datetime))
+      return toast("Preferred call-back must be at least 7 days before the event.", true);
+
+    const payload = {
+      device_uuid: getDeviceUUID(),
+      username: draft.full_name,
+      email: draft.email || "",
+      phone_number: draft.phone,
+      event_type: draft.event_type,
+      event_venue: draft.event_venue || "",
+      approx_guest: draft.estimated_guests || "",
+      status: "pending",
+      event_datetime: normalizeDateTimeLocal(draft.event_datetime || ""),
+      budget: draft.budget || "",
+      preferred_callback: normalizeDateTimeLocal(draft.preferred_callback),
+      theme: draft.theme || "",
+      notes: draft.notes || "",
+    };
+
+    try {
+      const res = await fetch(SAVE_URL, {
+        method: "POST",
+        ...withFrontendKey({
+          headers: {
+            "Content-Type": "application/json",
+            ...(FRONTEND_KEY ? { "X-Frontend-Key": FRONTEND_KEY } : {}),
+          },
+        }),
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try {
+          const j = await res.json();
+          if (j?.error) msg = j.error;
+        } catch {}
+        return toast(msg, true);
+      }
+
+      toast("Request submitted. We’ll call you back.");
+      setIsSubmitted(true);
+      setDraft({
+        full_name: "",
+        email: "",
+        phone: "",
+        event_type: "",
+        preferred_callback: "",
+        event_venue: "",
+        event_datetime: "",
+        estimated_guests: "",
+        budget: "",
+        theme: "",
+        notes: "",
+      });
+      setShowMore(false);
+      setTimeout(() => setIsSubmitted(false), 3500);
+    } catch (e) {
+      toast("Could not submit. Try again.", true);
+    }
+  };
 
   // helper: safe index read
   const getAt = (arr: string[], idx: number, fallback: string) =>
@@ -364,7 +503,7 @@ export default function PrintingServicePage() {
 
   // Compute first-load hero candidates
   const desktopHeroSrc = getAt(desktopImages, desktopIndex, FALLBACK_HERO_DESKTOP);
-  const mobileHeroSrc = getAt(mobileImages, mobileIndex, FALLBACK_HERO_MOBILE);
+  const mobileHeroSrc  = getAt(mobileImages,  mobileIndex,  FALLBACK_HERO_MOBILE);
 
   // Simple native <img> banner (bypasses next/image/SafeImage quirks)
   const ImgHero = ({
@@ -390,10 +529,6 @@ export default function PrintingServicePage() {
       decoding="async"
       style={{ maxWidth: "100%", height: "auto" }}
       onError={(e) => {
-        // eslint-disable-next-line no-console
-        try {
-          console.warn("[hero] image error for", src);
-        } catch {}
         (e.currentTarget as HTMLImageElement).src = FALLBACK_HERO_DESKTOP;
       }}
     />
@@ -515,9 +650,12 @@ export default function PrintingServicePage() {
               const formattedUrl = `/home/${slugify(category.name)}`;
 
               let offsetClass = "";
-              if (remainder === 1 && i === lastRowStart) {
+              const COLS = 4;
+              const rem = categories.length % COLS;
+              const lastRowStart = rem === 0 ? -1 : categories.length - rem;
+              if (rem === 1 && i === lastRowStart) {
                 offsetClass = "sm:col-start-2 sm:col-span-1";
-              } else if (remainder === 2 && i === lastRowStart) {
+              } else if (rem === 2 && i === lastRowStart) {
                 offsetClass = "sm:col-start-2";
               }
 
@@ -531,7 +669,7 @@ export default function PrintingServicePage() {
                     >
                       {/* 4:3 ratio container via wrapperClassName (prevents CLS) */}
                       <SafeImg
-                        src={`${API_BASE_URL}${category.image}`}
+                        src={joinUrl(API_BASE_URL || "", category.image)}
                         alt={category.name}
                         className="absolute inset-0 w-full h-full object-contain"
                         wrapperClassName="relative w-full h-0 pb-[75%] overflow-hidden rounded-lg bg-white"
@@ -539,8 +677,7 @@ export default function PrintingServicePage() {
                         loading="lazy"
                         sizes="(max-width: 640px) 50vw, (max-width: 1024px) 25vw, 240px"
                         onError={(e) => {
-                          (e.currentTarget as HTMLImageElement).src =
-                            "/images/img1.jpg";
+                          (e.currentTarget as HTMLImageElement).src = "/images/img1.jpg";
                         }}
                       />
                       <h3 className="mt-2 text-xs sm:text-lg font-normal sm:font-bold text-[#333] text-center">
@@ -573,30 +710,37 @@ export default function PrintingServicePage() {
 
         {/* CTA */}
         <section
-          className="flex flex-col lg:flex-row items-center sm:px-6 lg:px-12 xl:px-10 py-12"
+          className="flex flex-col lg:flex-row lg:items-start items-center px-4 sm:px-6 lg:px-10 xl:px-12 py-12 lg:gap-10 xl:gap-12 mx:auto"
           aria-labelledby="cta-heading"
         >
-          <div className="flex-1">
+          {/* Left: text + form */}
+          <div className="flex-1 w-full lg:max-w-2xl xl:max-w-3xl">
             <p className="text-[#837E8C] text-sm font-normal mb-2">Call To Action</p>
+
             <h2
               id="cta-heading"
               className="text-[#0E0E0E] text-3xl sm:text-4xl font-semibold leading-tight mb-4"
             >
               Let&apos;s Bring Your Ideas to Life
             </h2>
-            <p className="text-[#868686] max-w-xl font-normal">
+
+            <p className="text-[#868686] font-normal lg:max-w-2xl xl:max-w-3xl">
               Scelerisque in dolor donec neque velit. Risus aenean integer elementum
               odio sed adipiscing. Sem id scelerisque nunc quis. Imperdiet nascetur
               consequat.
             </p>
 
-            {/* Callback Form */}
+            {/* Event-based Callback form */}
             <form
-              onSubmit={handleSubmit}
-              className="mt-10 space-y-6 max-w-xl"
+              onSubmit={(e) => {
+                e.preventDefault();
+                saveCallback();
+              }}
+              className="mt-10 space-y-6 w-full lg:max-w-2xl xl:max-w-3xl"
               aria-label="Request a callback"
               noValidate
             >
+              {/* Required set */}
               <div>
                 <label htmlFor={nameId} className="block text-sm font-normal text-gray-700 mb-1">
                   Full Name
@@ -604,62 +748,217 @@ export default function PrintingServicePage() {
                 <input
                   type="text"
                   id={nameId}
-                  name="name"
+                  name="full_name"
                   required
                   placeholder="Enter your full name"
                   autoComplete="name"
                   aria-required="true"
                   className="w-full border border-gray-300 rounded-md p-3 text-gray-700 bg-white font-normal"
+                  value={draft.full_name}
+                  onChange={onChange}
                 />
               </div>
 
-              <div className="mt-6">
-                <label htmlFor={phoneId} className="block text-sm font-normal text-gray-700 mb-1">
-                  Phone Number
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                <div>
+                  <label htmlFor={emailId} className="block text-sm font-normal text-gray-700 mb-1">
+                    Email (Optional)
+                  </label>
+                  <input
+                    type="email"
+                    id={emailId}
+                    name="email"
+                    placeholder="name@example.com"
+                    autoComplete="email"
+                    className="w-full border border-gray-300 rounded-md p-3 text-gray-700 bg-white font-normal"
+                    value={draft.email || ""}
+                    onChange={onChange}
+                  />
+                </div>
+
+                <div>
+                  <label htmlFor={phoneId} className="block text-sm font-normal text-gray-700 mb-1">
+                    Phone Number
+                  </label>
+                  <input
+                    type="tel"
+                    id={phoneId}
+                    name="phone"
+                    required
+                    placeholder="e.g. +971 50 123 4567"
+                    autoComplete="tel"
+                    inputMode="tel"
+                    className="w-full border border-gray-300 rounded-md p-3 text-gray-700 bg-white font-normal"
+                    value={draft.phone}
+                    onChange={onChange}
+                    onBlur={(e) => {
+                      if (!isValidPhone(e.currentTarget.value)) {
+                        e.currentTarget.setCustomValidity("Enter a valid phone number");
+                      } else {
+                        e.currentTarget.setCustomValidity("");
+                      }
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Event type — TEXT INPUT */}
+              <div>
+                <label className="block text-sm font-normal text-gray-700 mb-1">
+                  Event Type
                 </label>
                 <input
-                  type="tel"
-                  id={phoneId}
-                  name="phone"
+                  type="text"
+                  name="event_type"
                   required
-                  placeholder="e.g. +971-50-123-4567"
-                  autoComplete="tel"
-                  inputMode="tel"
-                  pattern="^\+?[0-9\-\s()]{7,}$"
+                  placeholder="e.g. Marriage, Birthday, Corporate gala"
+                  className="w-full border border-gray-300 rounded-md p-3 bg-white text-gray-700"
+                  value={draft.event_type}
+                  onChange={onChange}
                   aria-required="true"
-                  aria-describedby={phoneHintId}
-                  className="w-full border border-gray-300 rounded-md p-3 text-gray-700 bg-white font-normal"
                 />
-                <p id={phoneHintId} className="sr-only">
-                  Enter a valid phone number with country code.
-                </p>
               </div>
 
               <div>
-                <label htmlFor={messageId} className="block text-sm font-normal text-gray-700 mb-1">
-                  Message
+                <label className="block text-sm font-normal text-gray-700 mb-1">
+                  Preferred Call-Back Date &amp; Time
                 </label>
-                <textarea
-                  id={messageId}
-                  name="message"
-                  rows={4}
+                <input
+                  type="datetime-local"
+                  name="preferred_callback"
                   required
-                  placeholder="Briefly tell us what this is about"
-                  autoComplete="off"
-                  aria-required="true"
-                  className="w-full border border-gray-300 rounded-md p-3 text-gray-700 bg-white font-normal"
+                  className="w-full border border-gray-300 rounded-md p-3 bg-white text-gray-700"
+                  value={draft.preferred_callback}
+                  onChange={onChange}
                 />
+                <p className="text-xs text-gray-500 mt-1">
+                  Must be at least a week before the event date (if provided).
+                </p>
               </div>
 
-              <div className="flex justify-start">
-                <button
-                  type="submit"
-                  className="bg-[#891F1A] text-white px-8 py-3 rounded-md hover:bg-[#6f1814] transition font-medium"
-                  aria-busy={isSubmitted}
-                >
-                  Send Request
-                </button>
-              </div>
+              {/* Inline expansion */}
+              {showMore && (
+                <div id="more-details" className="mt-4 space-y-4 border-t pt-4">
+                  <div>
+                    <label className="block text-sm font-normal text-gray-700 mb-1">
+                      Event Venue (optional)
+                    </label>
+                    <input
+                      type="text"
+                      name="event_venue"
+                      placeholder="Venue / Location"
+                      className="w-full border border-gray-300 rounded-md p-3 text-black"
+                      value={draft.event_venue || ""}
+                      onChange={onChange}
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-normal text-gray-700 mb-1">
+                        Event Date &amp; Time (optional)
+                      </label>
+                      <input
+                        type="datetime-local"
+                        name="event_datetime"
+                        className="w-full border border-gray-300 rounded-md p-3 text-black"
+                        value={draft.event_datetime || ""}
+                        onChange={onChange}
+                        onBlur={(e) => {
+                          if (
+                            draft.preferred_callback &&
+                            !validateSevenDaysRule(draft.preferred_callback, e.currentTarget.value)
+                          ) {
+                            e.currentTarget.setCustomValidity("Callback must be ≥ 7 days before event");
+                          } else {
+                            e.currentTarget.setCustomValidity("");
+                          }
+                        }}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-normal text-gray-700 mb-1">
+                        Estimated Guests (optional)
+                      </label>
+                      <input
+                        type="number"
+                        min={1}
+                        name="estimated_guests"
+                        placeholder="e.g. 120"
+                        className="w-full border border-gray-300 rounded-md p-3 text-black"
+                        value={draft.estimated_guests || ""}
+                        onChange={onChange}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-normal text-gray-700 mb-1">
+                        Budget Range (optional)
+                      </label>
+                      <input
+                        type="text"
+                        name="budget"
+                        placeholder="e.g. AED 5,000 – 8,000"
+                        className="w-full border border-gray-300 rounded-md p-3 text-black"
+                        value={draft.budget || ""}
+                        onChange={onChange}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-normal text-gray-700 mb-1">
+                        Theme / style (optional)
+                      </label>
+                      <input
+                        type="text"
+                        name="theme"
+                        placeholder="e.g. Minimal, Golden, Neon"
+                        className="w-full border border-gray-300 rounded-md p-3 text-black"
+                        value={draft.theme || ""}
+                        onChange={onChange}
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-sm font-normal text-gray-700 mb-1">
+                      Notes (optional)
+                    </label>
+                    <textarea
+                      name="notes"
+                      rows={4}
+                      placeholder="Tell us anything else that helps"
+                      className="w-full border border-gray-300 rounded-md p-3 text-black"
+                      value={draft.notes || ""}
+                      onChange={onChange}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Actions */}
+<div className="flex flex-col sm:flex-row items-stretch gap-3 sm:gap-3 w-full max-w-full">
+  <button
+    type="submit"
+    className="w-full sm:w-auto whitespace-nowrap bg-[#891F1A] text-white px-4 sm:px-6 py-3 rounded-md hover:bg-[#6f1814] transition font-medium text-sm sm:text-base"
+    aria-busy={isSubmitted}
+  >
+    Request a Call Back
+  </button>
+
+  <button
+    type="button"
+    onClick={() => setShowMore((v) => !v)}
+    className="w-full sm:w-auto whitespace-nowrap bg-white border border-[#891F1A] text-[#891F1A] px-4 sm:px-6 py-3 rounded-md hover:bg-[#f7eceb] transition font-medium text-sm sm:text-base"
+    aria-expanded={showMore}
+    aria-controls="more-details"
+  >
+    {showMore ? "Hide details" : "Add more detail"}
+  </button>
+</div>
+
 
               {/* Live region for submission feedback */}
               <p role="status" aria-live="polite" className="sr-only">
@@ -668,8 +967,9 @@ export default function PrintingServicePage() {
             </form>
           </div>
 
+          {/* Right: image */}
           <aside
-            className="w-full mr-[10px] sm:w-[500px] h-[600px] bg-[#8B8491] rounded-xl"
+            className="max-w-[520px] w-full h-[600px] bg-[#8B8491] rounded-xl self-end lg:self-auto lg:ml-auto"
             aria-hidden="true"
           />
         </section>

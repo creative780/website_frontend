@@ -43,6 +43,7 @@ const LABEL_TO_PATH: Record<string, string> = {
   'New Account': '/admin/new-account',
   'Navbar': '/admin/navbar',
   'Attributes': '/admin/attributes',
+  "Event Call Back": "/admin/event-callback",
 };
 
 const LABEL_TO_PATH_LOWER: Record<string, string> = Object.fromEntries(
