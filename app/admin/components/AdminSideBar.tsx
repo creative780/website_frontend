@@ -80,6 +80,7 @@ const withFrontendKey = (init: RequestInit = {}): RequestInit => {
 
 const ALL_LINKS: LinkItem[] = [
   { label: "Dashboard", href: "/admin/dashboard" },
+  { label: "Recently Deleted", href: "/admin/recently-deleted" },
   { label: "Orders", href: "/admin/orders" },
   { label: "Manage Categories", href: "/admin/manage-categories" },
   { label: "Attributes", href: "/admin/attributes" },

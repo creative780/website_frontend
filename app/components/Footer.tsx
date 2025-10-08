@@ -242,7 +242,10 @@ export default function Footer() {
             onError={(e) => (e.currentTarget.src = LOCAL_LOGO_FALLBACK)}
           />
           <p className="text-sm leading-relaxed font-normal text-white/90">
-            Creative Connect Advertising LLC — fast, accessible, and print-perfect. A shop where you can just stop, click and receive your order. If you don't want to stop, just order it online and it will be at your doorstep in few days. Our Goal is to provide you best services and best product according to your interest.
+            Creative Connect Advertising LLC — Fast. Accessible. Print-perfect.
+A one-stop shop where you can click, print, and receive your order.
+Creative printing solutions for everything in Dubai.
+Your trusted partner for event printing across the UAE — powered by expertise, quality control, and lightning-fast delivery.
           </p>
         </div>
 

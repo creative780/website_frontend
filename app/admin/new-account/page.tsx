@@ -52,6 +52,7 @@ const sidebarLinks = [
   'Attributes',
   'User View',
   "Event Call Back",
+  'Recently Deleted',
 ] as const;
 
 const rolePermissionsMap: { [role: string]: string[] } = {
@@ -65,6 +66,7 @@ const rolePermissionsMap: { [role: string]: string[] } = {
     'Manage Categories',
     'Attributes',
     'User View',
+    'Recently Deleted',
   ],
   'Product Manager': [
     'Products Section',
@@ -74,6 +76,7 @@ const rolePermissionsMap: { [role: string]: string[] } = {
     'Attributes',
     'User View',
     "Event Call Back",
+    'Recently Deleted',
   ],
   'Marketing Manager': [
     'Blog',
@@ -84,6 +87,7 @@ const rolePermissionsMap: { [role: string]: string[] } = {
     'Navbar',
     'User View',
     "Event Call Back",
+    'Recently Deleted',
   ],
   'Content Editor': [
     'Media Library',
@@ -93,6 +97,7 @@ const rolePermissionsMap: { [role: string]: string[] } = {
     'Second Carousel',
     'Navbar',
     'User View',
+    'Recently Deleted',
   ],
   'Customer Support': ['Orders', 'Notifications', 'Testimonials', 'User View', "Event Call Back",],
   Developer: [...sidebarLinks],

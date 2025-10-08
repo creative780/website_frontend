@@ -44,6 +44,8 @@ const LABEL_TO_PATH: Record<string, string> = {
   'Navbar': '/admin/navbar',
   'Attributes': '/admin/attributes',
   "Event Call Back": "/admin/event-callback",
+  "Recently Deleted": "/admin/recently-deleted",
+  "User View": "/home",
 };
 
 const LABEL_TO_PATH_LOWER: Record<string, string> = Object.fromEntries(
